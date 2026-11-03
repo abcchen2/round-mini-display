@@ -1,0 +1,31 @@
+{
+  "schema": 2,
+  "publishedDate": "2026-11-02",
+  "releaseTag": "motonav-2026.11.01-r2",
+  "android": {
+    "standard": "8.3.26",
+    "countdown": "8.3.26-single.32-fresh.1",
+    "sourceOnly": true,
+    "sourceAndBuildIdentityLogicUnchanged": true,
+    "unchangedTree": "c1bce306ee3428c1d4e28c5bc88df6828cc83300"
+  },
+  "ios": {
+    "version": "0.16.2",
+    "build": 16,
+    "unsignedIPA": true,
+    "countdownIncluded": false
+  },
+  "firmware": {
+    "version": "7.12.10-phone.8",
+    "board": "Waveshare ESP32-S3-Touch-AMOLED-1.75",
+    "sharedAndroidIOS": true,
+    "genericBootOnly": true,
+    "privateBootAssetsIncluded": false,
+    "windowsMacPackagesUseIdenticalImages": true,
+    "board185bUnchanged": "7.12.3-185B"
+  },
+  "credentialsIncluded": false,
+  "signingFilesIncluded": false,
+  "privateLogsIncluded": false,
+  "verification": "docs/VERIFY-IOS-FIRMWARE-2026-11-01.json"
+}

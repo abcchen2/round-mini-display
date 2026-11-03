@@ -1,0 +1,75 @@
+name: Verify universal firmware
+on:
+  push:
+    branches: [main]
+    paths:
+      - firmware/**
+      - .github/workflows/release-firmware.yml
+  workflow_dispatch:
+    inputs:
+      mac_package:
+        description: Verify the pinned macOS release ZIP on Apple and Intel runners
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: motonav-firmware-release
+  cancel-in-progress: false
+jobs:
+  tests:
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.mac_package != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test media, rotation, idle shutdown and flashing rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test in firmware/tests/*Test.cpp; do
+            g++ -std=c++17 "$test" -o /tmp/motonav-test
+            /tmp/motonav-test
+          done
+          cc firmware/tests/idle-power-off-test.c -o /tmp/motonav-idle
+          /tmp/motonav-idle
+          python3 firmware/tests/raster-work/check_sources.py
+          clang++ -O2 -std=c++17 -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer firmware/tests/raster-work/main.cpp -o /tmp/raster-work
+          /tmp/raster-work
+          clang++ -O2 -std=c++17 -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer firmware/tests/raster-work/receiver.cpp -o /tmp/raster-receiver
+          /tmp/raster-receiver
+          python3 firmware/build.py --help
+          python3 firmware/package_flasher.py --help
+  mac-package:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mac_package == 'true'
+    # GitHub hides draft release assets from tokens without repository write access.
+    # The commands below only download and test the package; they never publish it.
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify the exact release package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          info=json.loads(pathlib.Path('firmware/MAC_PACKAGE.json').read_text())
+          subprocess.run(['gh','release','download',info['tag'],'--repo','zyn950929/MotoNav','--pattern',info['file'],'--dir','/tmp/motonav-package'],check=True)
+          p=pathlib.Path('/tmp/motonav-package')/info['file']
+          assert hashlib.sha256(p.read_bytes()).hexdigest()==info['sha256']
+          print('PASS exact release ZIP SHA256')
+          PY
+          python3 firmware/tests/macos_package_smoke.py /tmp/motonav-package/*.zip | tee mac-package-check.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MotoNav-macOS-${{ matrix.runner }}
+          path: mac-package-check.log

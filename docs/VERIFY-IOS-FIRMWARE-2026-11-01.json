@@ -1,0 +1,64 @@
+{
+  "firmware": "7.12.10-phone.8",
+  "board": "Waveshare ESP32-S3-Touch-AMOLED-1.75",
+  "sharedPhonePlatforms": [
+    "android-standard",
+    "android-countdown",
+    "ios"
+  ],
+  "genericBootOnly": true,
+  "privateBootAssetsIncluded": false,
+  "publicExactBinaryFlashedOnDevice": false,
+  "sameProcessingCodeMatchedFiles": 69,
+  "ios": {
+    "version": "0.16.2",
+    "build": 16,
+    "unsignedIPA": true,
+    "productionSwiftMatchesInstalledBuild": true,
+    "matchedSwiftFiles": 59,
+    "screenOffCachedMapsBuildingsAndSmoothnessConfirmedByUser": true,
+    "uncachedBackgroundAreasRequireForegroundPreparation": true,
+    "trafficLightCountdownIncluded": false
+  },
+  "androidSourceUnchanged": true,
+  "androidDeviceRetestedThisRound": false,
+  "sourceAndProtocolRegression": {
+    "pixelBoundsAndProgressChecks": 7455483,
+    "currentReceiverChecks": 103,
+    "testedPayloadBytes": [
+      5,
+      185,
+      300,
+      485
+    ],
+    "rerouteProductionChecks": 1266,
+    "sanitizers": [
+      "address",
+      "undefined"
+    ]
+  },
+  "packages": {
+    "windowsVerifyOnlyAndCorruptionPathChecks": "passed",
+    "macNativeArm64AndIntelActualZipChecks": "passed",
+    "windowsMacApplicationAndFullImagesIdentical": true,
+    "macPackageSHA256": "526aabbde9608e4a99747ecd372eeeb267b981df7ca997e56f5de7314fdd2d1a",
+    "noPhysicalMacFlashClaim": true
+  },
+  "buildRuns": {
+    "ios": 41322678790,
+    "firmware": 41324070111,
+    "macDualArchitecture": 41324105283
+  },
+  "publicImageHashes": [
+    {
+      "file": "MotoNav_universal_1.75_v7.12.10-phone.8_panel0_app_0x10000.bin",
+      "bytes": 1293552,
+      "sha256": "80942f6566e3f2a6a7cf7138a29d3601a7cffd9b8699f2e80bfdb62afb6787df"
+    },
+    {
+      "file": "MotoNav_universal_1.75_v7.12.10-phone.8_panel0_full_0x0.bin",
+      "bytes": 1359088,
+      "sha256": "3ec3f1a4c5473a8b21c91838ce9d816eaf38381d798dae516e70b6bf68b395b6"
+    }
+  ]
+}
