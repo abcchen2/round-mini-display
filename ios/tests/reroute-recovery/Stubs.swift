@@ -26,10 +26,13 @@ final class MapFeeder {
     func onNaviStart(){};func onNaviEnd(){}
     func prepareRoute(key:String,coords:[(lat:Double,lng:Double)]){keys.append(key)}
     func onLocation(lat:Double,lng:Double,bearing:Double,kmh:Int){}
-    func onRoute(key:String,coords:[(lat:Double,lng:Double)],lights:[Int])->Bool{true}
+    func onRoute(key:String,coords:[(lat:Double,lng:Double)],lights:[(lat:Double,lng:Double)])->Bool{true}
 }
 final class WebRouteMetadata {
     static let shared=WebRouteMetadata();var current:UUID?
+    // 红绿灯由 metadata 旁路异步补齐；默认空表，测试不涉及灯位播报
+    private(set) var lampDistances:[Double]=[]
+    func lampCoords()->[(lat:Double,lng:Double)]{[]}
     func stop(){current=nil};func load(_ route:MotorRoute){current=route.id}
     func push(route:MotorRoute,progress:Double,fresh:Bool,speed:Int){}
 }
