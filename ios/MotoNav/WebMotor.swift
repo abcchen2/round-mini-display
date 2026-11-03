@@ -174,6 +174,11 @@ final class WebMotorSession: ObservableObject {
     @Published var arrived = false
     @Published var overview = false
     private var cum: [Double] = [], progress = 0.0, timer: Timer?, token = UUID(), announced = ""
+    /// 红绿灯播报：记住已念过的（灯位+档位）key，避免同一盏灯每帧重播
+    private var lampAnnounced = ""
+    private static let lampGates = [300, 60]
+    /// 转向播报档位（由近到远试）。原来按 distance/100 去重，500→498 时会 2 米内连播两句。
+    private static let turnGates = [500, 200]
     private var stepIndex = 0, rerouting = false
     private var reroutePolicy=MotorReroutePolicy(), rerouteTask: Task<Void,Never>?
     private var routeTolerance=25.0, statusUntil=0.0, replanStartedAt=0.0
@@ -198,7 +203,8 @@ final class WebMotorSession: ObservableObject {
         tracker=MotorRouteTracker(route.points);confirmedArrival=false;metadataSuspended=false;simulationTick=nil;realHeading=nil
         speed = NavigationSpeed.values.contains(simulationSpeed) ? simulationSpeed : 60; reroutePolicy.reset();routeTolerance=25;statusUntil=0; nextVia = 0; lastFix = nil; viaProgress = route.request.vias.map { v in nearestAlong(v) }
         roadSent = ""; footerSent = ""; startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil
-        announced = ""; status = simulate ? "模拟导航" : "定位导航"; token = UUID()
+        announced = ""; lampAnnounced = ""
+        status = simulate ? "模拟导航" : "定位导航"; token = UUID()
         UIApplication.shared.isIdleTimerDisabled = true
         MapFeeder.shared.onNaviStart(); BleLink.shared.send("C")
         MapFeeder.shared.prepareRoute(key: route.id.uuidString, coords: route.coords)
@@ -296,6 +302,7 @@ final class WebMotorSession: ObservableObject {
                 self.route=new;self.cum=new.cum;self.progress=0;self.stepIndex=0;self.nextVia=0
                 self.tracker=MotorRouteTracker(new.points);self.confirmedArrival=false;self.lastFix=nil;self.previousFix=nil;self.metadataSuspended=false
                 self.roadSent="";self.footerSent="";self.announced=""
+                self.lampAnnounced=""
                 self.viaProgress=new.request.vias.map{v in self.nearestAlong(v)}
                 MapFeeder.shared.prepareRoute(key:new.id.uuidString,coords:new.coords)
                 WebRouteMetadata.shared.load(new);succeeded=true
@@ -330,7 +337,7 @@ final class WebMotorSession: ObservableObject {
         let geometryHeading = atan2((ahead.lng-p.lng)*cos(p.lat * .pi/180),ahead.lat-p.lat)*180 / .pi
         let heading = simulation ? geometryHeading : (realHeading ?? geometryHeading)
         MapFeeder.shared.onLocation(lat: p.lat,lng: p.lng,bearing: heading,kmh: speed)
-        _ = MapFeeder.shared.onRoute(key: route.id.uuidString,coords: route.coords,lights: [])
+        _ = MapFeeder.shared.onRoute(key: route.id.uuidString,coords: route.coords,lights: WebRouteMetadata.shared.lampCoords())
         BleLink.shared.send("#v,\(speed)")
         BleLink.shared.send("#x,0")
         WebRouteMetadata.shared.push(route:route,progress:progress,fresh:off<=routeTolerance && !rerouting,speed:speed)
@@ -349,8 +356,34 @@ final class WebMotorSession: ObservableObject {
             footerSent = footer
             if let img = TextImage.render(footer,maxW:240,size:19,minSize:15) { BleLink.shared.sendImage(slot:1,w:img.w,h:img.h,data:img.data) }
         }
-        if route.detailedGuidance, off <= routeTolerance, !rerouting, announced != "\(stepIndex)-\(distance/100)", distance <= 500 {
-            announced = "\(stepIndex)-\(distance/100)"; Speech.shared.speak("前方\(distance)米，\(instruction)")
+        // 转向播报：500 / 200 米两档，每段每档只念一次；文案仍用实际距离，不说虚数。
+        if route.detailedGuidance, off <= routeTolerance, !rerouting, distance <= 500 {
+            for gate in Self.turnGates.reversed() where distance <= gate {
+                let key = "turn-\(stepIndex)-\(gate)"
+                if announced != key {
+                    announced = key; Speech.shared.speak("前方\(distance)米，\(instruction)")
+                    break
+                }
+            }
+        }
+        // 高德把几公里直行并成一个转向分段，长直行里上面那条永远不会响 —— 红绿灯单独成事件。
+        // 坐标来自 WebRouteMetadata 的驾车 SDK 旁路，已投影成“距起点多少米”。
+        // distance > 200 是让位规则：进到转向播报范围就只播转向，不抢话。
+        if route.detailedGuidance, off <= routeTolerance, !rerouting, distance > 200 {
+            // 按沿程距离找当前这盏灯，不靠索引递增：偏航重算后元数据重载也不会串位
+            let lamps = WebRouteMetadata.shared.lampDistances
+            if let i = lamps.firstIndex(where: { $0 >= progress - 5 }) {
+                let toLamp = Int((lamps[i] - progress).rounded())
+                // 由近到远试档位：定位跳变时先命中的是更近的档，不会把 40 米说成 300 米
+                for gate in Self.lampGates.reversed() where toLamp <= gate {
+                    let key = "lamp-\(Int(lamps[i]))-\(gate)"
+                    if lampAnnounced != key {
+                        lampAnnounced = key
+                        Speech.shared.speak(gate == Self.lampGates.last! ? "前方路口，注意信号灯" : "前方\(gate)米有红绿灯")
+                        break
+                    }
+                }
+            }
         }
         let end = route.points.last!
         // Destination-ahead text never completes a trip. Require final progress AND physical proximity.

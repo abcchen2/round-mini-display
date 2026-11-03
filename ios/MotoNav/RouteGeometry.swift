@@ -55,6 +55,16 @@ struct RouteShape {
             return Self.metres(before,back)<=18 && Self.angle(Self.bearing(before,at(p.along)),heading)<=30
         })
     }
+    /// 红绿灯专用：高德很多 link 没有路名，退回按几何匹配。
+    /// 仍要求 12 米内、同一方向、25 米回看一致，避免平行道路误配。
+    func match(_ point: MotorPoint, back: MotorPoint) -> Projection? {
+        guard Self.metres(point,back)>=8 else { return nil }
+        let heading=Self.bearing(back,point)
+        return Self.unique(projections(point,maximum:12).filter { p in
+            let before=at(max(0,p.along-25))
+            return Self.metres(before,back)<=18 && Self.angle(Self.bearing(before,at(p.along)),heading)<=30
+        })
+    }
     /// Up to three ordered on-route anchors, favoring deviations rather than cutting across them.
     func anchors() -> [MotorPoint] {
         guard points.count>2, let total=cum.last, total>=400 else { return [] }

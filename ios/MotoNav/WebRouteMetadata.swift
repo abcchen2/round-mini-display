@@ -6,17 +6,29 @@ import ObjectiveC
 final class WebRouteMetadata: NSObject, ObservableObject {
     static let shared=WebRouteMetadata()
     struct Camera { let point: MotorPoint; let along: Double; let speed: Int; let icon: Int }
+    /// 沿途红绿灯：along 是它在**当前导航路线**上离起点的米数，播报和小地图都用这个。
+    struct Light { let point: MotorPoint; let along: Double }
     @Published private(set) var status=""
     private var query: MetadataQuery?
     private var generation=UUID(), routeID: UUID?
     private var cameras: [Camera]=[]
+    private var lamps: [Light]=[]
     private var lastMap="",lastLimit=""
     private let worker=DispatchQueue(label:"motonav.web-camera-match",qos:.utility)
     private var work: DispatchWorkItem?
 
+    /// 播报用：升序的沿途距离（米），随 lamps 一起在主线程更新
+    private(set) var lampDistances: [Double] = []
+    /// 小地图用：高德坐标
+    func lampCoords() -> [(lat: Double, lng: Double)] { lamps.map { (lat: $0.point.lat, lng: $0.point.lng) } }
+
+    private func apply(lamps rows: [Light]) {
+        lamps=rows;lampDistances=rows.map{$0.along}
+    }
+
     func stop() {
         generation=UUID();routeID=nil;query?.cancel();query=nil;work?.cancel();work=nil
-        cameras=[];status="";lastMap="";lastLimit=""
+        cameras=[];apply(lamps:[]);status="";lastMap="";lastLimit=""
         BleLink.shared.send("#c");BleLink.shared.send("#k")
     }
     func load(_ route: MotorRoute) {
@@ -43,9 +55,23 @@ final class WebRouteMetadata: NSObject, ObservableObject {
                         found.append(Camera(point:item.point,along:matched.along,speed:item.speed,icon:item.icon))
                     }
                     let matched=found.sorted{$0.along<$1.along}
+                    // 红绿灯和电子眼走同一套投影，只是它落在无名小段上的比例更高
+                    var raw: [Light]=[]
+                    for item in data.lights {
+                        guard let p=RouteShape.unique(source.projections(item)),p.segment<data.roads.count else { continue }
+                        let road=data.roads[p.segment],back=source.at(max(0,p.along-25))
+                        guard let hit = (road.isEmpty ? target.match(item,back:back) : target.match(item,back:back,road:road)) else { continue }
+                        raw.append(Light(point:item,along:hit.along))
+                    }
+                    var rows: [Light]=[]
+                    for lamp in raw.sorted(by:{$0.along<$1.along}) {
+                        if let last=rows.last,lamp.along-last.along<15 { continue }   // 同一路口高德常给多个 link
+                        rows.append(lamp)
+                    }
                     DispatchQueue.main.async { [weak self] in
                         guard let self=self,self.generation==token,self.routeID==route.id,WebMotorSession.shared.route?.id==route.id,WebMotorSession.shared.running else { return }
-                        self.cameras=matched;self.status="已核对 \(matched.count) 个电子眼"
+                        self.cameras=matched;self.apply(lamps:rows)
+                        self.status=rows.isEmpty ? "已核对 \(matched.count) 个电子眼" : "已核对 \(matched.count) 个电子眼、\(rows.count) 个红绿灯"
                     }
                 }
                 self.work=job;self.worker.async(execute:job)
@@ -74,7 +100,7 @@ private extension Int { var roundedToTen: Int { ((self+5)/10)*10 } }
 
 private final class MetadataQuery: NSObject {
     struct Point { let point: MotorPoint; let speed: Int; let icon: Int }
-    struct DataSet { let points: [MotorPoint]; let roads: [String]; let cameras: [Point] }
+    struct DataSet { let points: [MotorPoint]; let roads: [String]; let cameras: [Point]; let lights: [MotorPoint] }
     private let route: MotorRoute
     private var completion: ((Result<DataSet,Error>)->Void)?
     private var timeout: DispatchWorkItem?
@@ -118,19 +144,27 @@ private final class MetadataQuery: NSObject {
         guard completion != nil,let r=manager.naviRoute,
               RouteShape.metres(MotorPoint(lat:Double(r.routeEndPoint.latitude),lng:Double(r.routeEndPoint.longitude)),route.request.end)<100,
               RouteShape.metres(MotorPoint(lat:Double(r.routeStartPoint.latitude),lng:Double(r.routeStartPoint.longitude)),route.request.start)<100 else { return }
-        var points: [MotorPoint]=[],roads: [String]=[]
+        var points: [MotorPoint]=[],roads: [String]=[],lamps: [MotorPoint]=[]
         for segment in r.routeSegments { for link in segment.links {
+            // 红绿灯挂在 link 上：整个 link 都没有灯时 isHadTrafficLights 为 false
+            if link.isHadTrafficLights, let end=link.coordinates.last {
+                lamps.append(MotorPoint(lat:Double(end.latitude),lng:Double(end.longitude)))
+            }
             for p in link.coordinates {
                 let next=MotorPoint(lat:Double(p.latitude),lng:Double(p.longitude))
                 if let previous=points.last,RouteShape.metres(previous,next)<0.01 { continue }
                 if !points.isEmpty { roads.append(link.roadName ?? "") };points.append(next)
             }
         } }
+        // 高德直接给点位时优先用它（比 link 端点更准）
+        if let given=r.routeTrafficLights, !given.isEmpty {
+            lamps=given.map{MotorPoint(lat:Double($0.latitude),lng:Double($0.longitude))}
+        }
         let cameras=(r.routeCameras ?? []).compactMap { c -> Point? in
             guard let p=c.coordinate else { return nil }
             return Point(point:MotorPoint(lat:Double(p.latitude),lng:Double(p.longitude)),speed:max(0,c.cameraSpeed),icon:NaviBridge.camIcon(c.cameraType.rawValue))
         }
-        finish(.success(DataSet(points:points,roads:roads,cameras:cameras)))
+        finish(.success(DataSet(points:points,roads:roads,cameras:cameras,lights:lamps)))
     }
     @objc(driveManager:onCalculateRouteFailure:)
     func failed(_ manager: AMapNaviDriveManager,error:NSError?) {

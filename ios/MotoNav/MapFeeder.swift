@@ -64,6 +64,7 @@ final class MapFeeder: ObservableObject {
 
     // 当前路线
     private var routeKey = ""
+    private var routeSig = ""
     private var routeBuildSerial = 0
     private var routeId = 0
     private var routeBytes: Data?
@@ -100,7 +101,7 @@ final class MapFeeder: ObservableObject {
     private var satMode: Bool { Settings.shared.theme == MapFeeder.THEME_SAT }
 
     /// Preserve prepared offline packets when navigation starts.
-    func onNaviStart() { routeKey = "" }
+    func onNaviStart() { routeKey = ""; routeSig = "" }
     /// Cache reads and BLE keep running while UIKit/SDK graphics are unavailable.
     func setRenderingAvailable(_ active:Bool) {
         renderingAvailable=active
@@ -506,10 +507,13 @@ final class MapFeeder: ObservableObject {
     /// coords、lights 都是高德坐标（纬度, 经度）。还没有坐标系（没定位）时返回 false，稍后再试。
     func onRoute(key: String, coords: [(lat: Double, lng: Double)], lights: [(lat: Double, lng: Double)]) -> Bool {
         guard let f = frame else { return false }
-        if key == routeKey { return true }
+        // 红绿灯由 WebRouteMetadata 异步补上：路线没变、只是灯数变了要重新编码，但不必重拉瓦片。
+        let sig = "\(key)#\(lights.count)"
+        if sig == routeSig { return true }
         if coords.count < 2 { return false }
-        routeKey = key
-        prepareRoute(key: key, coords: coords)
+        let routeChanged = key != routeKey
+        routeKey = key; routeSig = sig
+        if routeChanged { prepareRoute(key: key, coords: coords) }
         routeBuildSerial += 1; let serial = routeBuildSerial
         worker.async {
             var pts = [Double](repeating: 0, count: coords.count * 2)
