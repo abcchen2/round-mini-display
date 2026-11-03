@@ -1,0 +1,6 @@
+# Keep the Mac double-click scripts executable with Unix line endings.
+*.command text eol=lf
+# Windows PowerShell 5 needs the existing UTF-8 BOM; preserve Windows endings.
+firmware/windows-flasher/*.ps1 text eol=crlf
+firmware/windows-flasher/*.bat text eol=crlf
+firmware/RELEASE_VERSION text eol=lf
