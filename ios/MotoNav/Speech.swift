@@ -8,6 +8,7 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
     static let shared = Speech()
     private let synth = AVSpeechSynthesizer()
     private var automaticVoice: AVSpeechSynthesisVoice?
+    private var voiceCheckedAt = -Double.infinity
     private var busy = 0
     private var releaseWork: DispatchWorkItem?
     private(set) var isSpeaking = false
@@ -37,9 +38,14 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
         if !id.isEmpty, let selected = AVSpeechSynthesisVoice(identifier: id) {
             return selected
         }
-        // 每次自动播报前刷新，下载／删除系统音色后无需重装或修改设置。
+        // 定期刷新自动音色，下载／删除系统音色后无需重装或修改设置。
         // 不把自动结果写入 voice_id，以便以后继续自动升级音色。
-        automaticVoice = Self.preferredChineseVoice()
+        // speechVoices() 枚举全部系统音色开销不小，60 秒内复用上次结果。
+        let now = ProcessInfo.processInfo.systemUptime
+        if automaticVoice == nil || now - voiceCheckedAt >= 60 {
+            automaticVoice = Self.preferredChineseVoice()
+            voiceCheckedAt = now
+        }
         return automaticVoice
     }
 
