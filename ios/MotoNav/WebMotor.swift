@@ -354,6 +354,8 @@ final class WebMotorSession: ObservableObject {
                 guard let new=routes.first else {throw AmapShare.Fail("未返回可用路线")}
                 self.route=new;self.cum=new.cum;self.progress=0;self.stepIndex=0;self.nextVia=0
                 self.tracker=MotorRouteTracker(new.points);self.confirmedArrival=false;self.lastFix=nil;self.previousFix=nil;self.metadataSuspended=false;self.recoveringPosition=false
+                self.position=nil;self.turnMetres=0;self.turnDirection="";self.instruction="等待定位"
+                BleLink.shared.send("#NW,1")
                 self.roadSent="";self.footerSent=""
                 self.turnAnnouncements = MotorAnnouncementGate(); self.lampAnnouncements = MotorAnnouncementGate()
                 self.viaProgress=new.request.vias.map{v in self.nearestAlong(v)}

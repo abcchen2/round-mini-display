@@ -56,6 +56,7 @@ session.stop()
 
 MotorRoutes.mode = .success;session.start(original,simulate:false);trigger(session)
 check(!busy(session) && session.running && session.route?.id==newRoute.id,"success installs new route and releases lease")
+check(session.position==nil && session.turnDirection.isEmpty && session.turnMetres==0,"new route waits for a fresh fix instead of displaying the previous turn")
 session.stop()
 
 // Real session watchdog: suspend I/O without honoring cancellation, keep GPS callbacks active.
