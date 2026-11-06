@@ -14,9 +14,10 @@ final class IndependentPlanner:ObservableObject {
     @Published var selected=0
     @Published var busy=false
     @Published var message=""
+    @Published private(set) var verificationPage:URL?
     private var generation=UUID()
     private var task:Task<Void,Never>?
-    func invalidate(){generation=UUID();task?.cancel();task=nil;routes=[];selected=0;busy=false}
+    func invalidate(){generation=UUID();task?.cancel();task=nil;routes=[];selected=0;busy=false;verificationPage=nil}
     func load(_ entry:SavedMotorPlan){
         guard entry.valid else{return}
         invalidate();start=entry.request.start;end=entry.request.end;vias=entry.request.vias
@@ -36,6 +37,7 @@ final class IndependentPlanner:ObservableObject {
         guard let end=end else{message="请选择目的地";return}
         invalidate();let token=generation
         let request=MotorRequest(start:origin,end:end,vias:mode == .bicycle ? []:vias,bicycle:mode == .bicycle)
+        verificationPage = mode == .motorcycle ? request.page:nil
         busy=true;message="正在规划\(mode.rawValue)路线…"
         task=Task { @MainActor [weak self] in
             do{
@@ -55,14 +57,18 @@ final class IndependentPlanner:ObservableObject {
 struct MotorLoginView:View {
     @StateObject private var browser=MotorBrowser()
     let page:URL?
+    let done:()->Void
     @Environment(\.dismiss) private var dismiss
     var body:some View {
         NavigationView{
             VStack{
-                Text("仅在登录或验证时打开网页。登录保存在本机，正常规划可直接在 App 完成。").font(.caption).padding()
+                Text("请在当前路线页面检查登录或验证提示；完成后点右上角重试。登录信息保存在本机。").font(.caption).padding()
                 MotorBrowserView(browser:browser)
                 Text(ContentView.userMessage(browser.status)).font(.caption)
-            }.navigationTitle("高德登录／验证").toolbar{ToolbarItem(placement:.confirmationAction){Button("完成"){dismiss()}}}
+            }.navigationTitle("高德登录／验证").toolbar{
+                ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}}
+                ToolbarItem(placement:.confirmationAction){Button("完成并重试"){dismiss();done()}}
+            }
         }.onAppear{if let page=page{browser.web.load(URLRequest(url:page))}}
     }
 }
@@ -105,7 +111,7 @@ struct IndependentPlannerView:View {
         }
         .sheet(isPresented:$waypoints){RouteWaypointEditor(points:model.vias,near:model.start){points in model.vias=points;model.invalidate()}}
         .sheet(isPresented:$showHistory){MotorHistoryView(bicycle:mode == .bicycle){entry in model.load(entry)}}
-        .sheet(isPresented:$login){MotorLoginView(page:nil)}
+        .sheet(isPresented:$login){MotorLoginView(page:model.verificationPage){model.plan(mode)}}
         .onAppear{
             guard !loaded else{return};loaded=true
             LocationService.shared.start()
@@ -132,7 +138,7 @@ struct IndependentPlannerView:View {
         VStack(alignment:.leading,spacing:14){
             MotorMap(route:route,position:nil,overview:true).frame(height:260).clipShape(RoundedRectangle(cornerRadius:18))
             if !route.detailedGuidance {
-                Text("已取得路线轨迹，暂无分段转向指引，请按地图路线行进。")
+                Text("已取得路线轨迹，暂无分段转向指引。请跟随手机地图；圆屏暂显示等待指引。")
                     .font(.footnote).foregroundColor(ContentView.sub)
             }
             ForEach(Array(model.routes.enumerated()),id:\.offset){i,r in
@@ -172,7 +178,7 @@ struct IndependentNavigationView: View {
                 HStack(alignment:.center,spacing:18){
                     Image(systemName:arrow).font(.system(size:48,weight:.bold)).foregroundColor(ContentView.pink).frame(width:58)
                     VStack(alignment:.leading,spacing:6){
-                        Text(NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
+                        Text(guide.position == nil ? "等待定位" : guide.recoveringPosition ? "核对路线" : NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
                         Text(guide.instruction).font(.headline).lineLimit(2)
                         if !navigationNotice.isEmpty {Text(navigationNotice).font(.caption).foregroundColor(ContentView.sub)}
                     };Spacer(minLength:0)
@@ -203,7 +209,9 @@ struct IndependentNavigationView: View {
         .alert("结束导航？",isPresented:$confirmExit){Button("结束",role:.destructive){guide.stop();guide.arrived=false;dismiss()};Button("继续导航",role:.cancel){}}
     }
     private var navigationNotice:String {
+        if guide.position == nil {return "取得定位后开始指引"}
         if guide.status.contains("重算失败") {return "重新规划暂未完成，将保留当前路线"}
+        if guide.recoveringPosition {return "正在按恢复的定位核对路线，稍后继续指引"}
         if guide.status.contains("正在重新规划") {return "偏离路线，正在重新规划…"}
         if guide.status.contains("已偏离路线") {return "已偏离路线"}
         if guide.status.contains("GPS") {return "定位信号较弱"}
@@ -211,6 +219,7 @@ struct IndependentNavigationView: View {
         return guide.simulation ? "模拟导航":""
     }
     private var arrow:String {
+        if guide.position == nil || guide.recoveringPosition {return "location.circle"}
         if guide.route?.detailedGuidance == false {return "point.topleft.down.curvedto.point.bottomright.up"}
         switch guide.turnDirection {case "L":return "arrow.turn.up.left";case "R":return "arrow.turn.up.right";case "SL":return "arrow.up.left";case "SR":return "arrow.up.right";case "U":return "arrow.uturn.down";default:return "arrow.up"}
     }

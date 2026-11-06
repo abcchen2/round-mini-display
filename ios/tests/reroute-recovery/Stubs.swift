@@ -18,22 +18,21 @@ enum TextImage {
     struct Image {let w:Int,h:Int,data:Data}
     static func render(_ text:String,maxW:Int,size:Double,minSize:Double)->Image?{nil}
 }
-final class Speech {static let shared=Speech();func stopNow(){};func speak(_ text:String){}}
+final class Speech {static let shared=Speech();var messages:[String]=[];func stopNow(){};func speak(_ text:String){messages.append(text)}}
 final class RideRecorder {static let shared=RideRecorder();func start(_ text:String){};func finish(){}}
 final class LocationService {static let shared=LocationService();func setPrecise(_ on:Bool){}}
 final class MapFeeder {
-    static let shared=MapFeeder();var keys:[String]=[]
+    static let shared=MapFeeder();var keys:[String]=[];var locations:[MotorPoint]=[]
     func onNaviStart(){};func onNaviEnd(){}
     func prepareRoute(key:String,coords:[(lat:Double,lng:Double)]){keys.append(key)}
-    func onLocation(lat:Double,lng:Double,bearing:Double,kmh:Int){}
+    func onLocation(lat:Double,lng:Double,bearing:Double,kmh:Int){locations.append(MotorPoint(lat:lat,lng:lng))}
     func onRoute(key:String,coords:[(lat:Double,lng:Double)],lights:[(lat:Double,lng:Double)])->Bool{true}
 }
 final class WebRouteMetadata {
     static let shared=WebRouteMetadata();var current:UUID?
-    // 红绿灯由 metadata 旁路异步补齐；默认空表，测试不涉及灯位播报
-    private(set) var lampDistances:[Double]=[]
+    var lampDistances:[Double]=[]
     func lampCoords()->[(lat:Double,lng:Double)]{[]}
-    func stop(){current=nil};func load(_ route:MotorRoute){current=route.id}
+    func stop(){current=nil;lampDistances=[]};func load(_ route:MotorRoute){current=route.id}
     func push(route:MotorRoute,progress:Double,fresh:Bool,speed:Int){}
 }
 enum MotorRoutes {

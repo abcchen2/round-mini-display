@@ -3,6 +3,18 @@ import ObjectiveC
 
 /// SDK-independent parsing, including responses with a full path but no step geometry.
 enum BicycleRouteParser {
+    /// https://lbs.amap.com/api/ios-sdk/guide/map-tool/errorcode/
+    static func failureMessage(code: Int) -> String {
+        let hint: String
+        switch code {
+        case 1002: hint = "请检查高德 iOS Key 是否正确或已过期"
+        case 1008: hint = "请检查高德 iOS Key 绑定的应用标识是否与安装包一致"
+        case 1009: hint = "请使用 iOS 平台的高德 Key"
+        case 1003, 1012: hint = "请检查高德 iOS Key 的骑行规划服务权限"
+        default: hint = "请检查网络和高德服务配置后重试"
+        }
+        return "自行车规划失败（错误码：\(code)）：\(hint)"
+    }
     struct Segment {
         let polyline: String, instruction: String, road: String, action: String
         let distance: Int, duration: Int
@@ -123,6 +135,6 @@ final class BicycleRouteQuery: NSObject {
     }
     @objc(AMapSearchRequest:didFailWithError:)
     func failed(_ request: Any?, error: NSError?) {
-        finish(.failure(AmapShare.Fail("自行车规划失败（\(error?.code ?? 0)）：\(error?.localizedDescription ?? "请检查高德 iOS Key 权限")")))
+        finish(.failure(AmapShare.Fail(BicycleRouteParser.failureMessage(code:error?.code ?? 0))))
     }
 }

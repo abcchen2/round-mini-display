@@ -5,7 +5,8 @@ s=(root/'MotoNav/WebMotor.swift').read_text()
 core=s[s.index('struct MotorPoint'):s.index('enum MotorRoutes')]
 start=s.index('    static func parse(_ bytes: Data')
 end=s.index('\n}\n\n/// Independent',start)
-core+='enum MotorRoutes {\n'+s[start:end]+'\n}\n'
+shared=s[s.index('    static func fromShare('):s.index('    static func load(_ request:')]
+core+='enum MotorRoutes {\n'+shared+s[start:end]+'\n}\n'
 nav=(root/'MotoNav/NaviBridge.swift').read_text()
 start=nav.index('    static func distM('); end=nav.index('\n    }',start)+6
 core+='enum NaviBridge {\n'+nav[start:end]+'\n}\n'
@@ -55,6 +56,8 @@ core+=(root/'MotoNav/PhoneClockSync.swift').read_text()+'\n'
 core+=(root/'MotoNav/MotorPlanHistory.swift').read_text()+'\n'
 tests+='\n'+(root/'tests/parity-016/main.swift').read_text()
 tests+='\n'+(root/'tests/bicycle-planning/main.swift').read_text()
+tests+='\n'+(root/'tests/webmotor/planning-regressions.swift').read_text()
+tests+='\n'+(root/'tests/webmotor/recovery-regressions.swift').read_text()
 folder=Path(tempfile.mkdtemp(prefix='motonav-core-'))
 (folder/'main.swift').write_text('import Foundation\n'+core+tests)
 subprocess.run(['swiftc',str(folder/'main.swift'),'-o',str(folder/'test')],check=True)

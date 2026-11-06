@@ -2,20 +2,30 @@ import Foundation
 
 /// GCJ-02 progress is bounded by elapsed time and physical movement, including loops.
 struct MotorRouteTracker {
-    struct Match { let progress: Double; let offset: Double; let arrived: Bool }
+    struct Match { let progress: Double; let offset: Double; let arrived: Bool; var needsReplan = false }
     private let shape: RouteShape
     private var progress=0.0,lastTime:Double?,lastPoint:MotorPoint?
     private var armed=false,arrivalCount=0,nearSince=0.0
+    private var recoveryCandidate: (point: MotorPoint, accuracy: Double, time: Double)?
+    private var recoveryNeedsReplan = false
     init(_ points:[MotorPoint]) {shape=RouteShape(points:points)}
     mutating func update(_ point:MotorPoint,accuracy:Double,now:Double)->Match? {
         guard MotorRequest.valid(point.lat,point.lng),accuracy.isFinite,accuracy>=0,accuracy<=50,now.isFinite,shape.points.count>=2 else{return nil}
         if let previous=lastTime,now-previous<0.4{return nil}
+        if recoveryNeedsReplan, let previous=lastTime, let last=lastPoint {
+            guard RouteShape.metres(last,point)<=max(80,(now-previous)*75)+accuracy*2 else {return nil}
+            lastTime=now;lastPoint=point
+            return Match(progress:progress,offset:0,arrived:false,needsReplan:true)
+        }
         let total=shape.cum.last ?? 0
         var lower=0.0,upper=total
         if let previous=lastTime,let last=lastPoint {
             if now-previous>4 {arrivalCount=0;nearSince=0}
             let travel=RouteShape.metres(last,point),reach=min(2500,max(80,min(30,now-previous)*75))
-            guard travel<=reach+accuracy*2 else{return nil}
+            if travel>reach+accuracy*2 {
+                return recover(point,accuracy:accuracy,now:now,elapsed:now-previous)
+            }
+            recoveryCandidate=nil
             lower=max(0,progress-80);upper=min(total,progress+min(reach,max(100,travel+accuracy*2+35)))
         } else if RouteShape.metres(point,shape.points[0])<100 {upper=min(total,300)}
         let scale=cos(point.lat * .pi/180)*111320
@@ -44,5 +54,34 @@ struct MotorRouteTracker {
         let near=armed && accuracy<=25 && offset<=30 && remain<=min(30,total*0.15) && end<=min(30,total*0.2)
         if near {if arrivalCount==0{nearSince=now};arrivalCount+=1}else{arrivalCount=0;nearSince=0}
         return Match(progress:progress,offset:offset,arrived:near && arrivalCount>=3 && now-nearSince>=2)
+    }
+
+    /// A long outage needs two consistent fixes. A single distant GPS jump never moves progress.
+    private mutating func recover(_ point: MotorPoint, accuracy: Double, now: Double, elapsed: Double) -> Match? {
+        guard elapsed>=30 else {return nil}
+        guard let previous=recoveryCandidate else {
+            recoveryCandidate=(point,accuracy,now);return nil
+        }
+        let dt=now-previous.time
+        guard dt>=0.4 else {return nil}
+        guard dt<=5,RouteShape.metres(previous.point,point)<=max(80,dt*75)+accuracy+previous.accuracy else {
+            recoveryCandidate=(point,accuracy,now);return nil
+        }
+        let lower=max(0,progress-80),upper=min(shape.cum.last ?? 0,progress+elapsed*75)
+        func projection(_ p: MotorPoint, _ accuracy: Double) -> RouteShape.Projection? {
+            RouteShape.unique(shape.projections(p,maximum:max(25,accuracy*1.5)).filter{$0.along>=lower && $0.along<=upper})
+        }
+        let before=projection(previous.point,previous.accuracy),current=projection(point,accuracy)
+        lastTime=now;lastPoint=point;recoveryCandidate=nil;arrivalCount=0;nearSince=0
+        if let before=before,let current=current,
+           current.along>=before.along-accuracy-previous.accuracy,
+           abs(current.along-before.along)<=RouteShape.metres(previous.point,point)+accuracy+previous.accuracy+35 {
+            progress=max(progress,current.along)
+            return Match(progress:progress,offset:current.offset,arrived:false)
+        }
+        // Loops, parallel roads and off-route fixes cannot establish which passage is current.
+        // Retain route progress, but accept fresh physical positions for a bounded replan.
+        recoveryNeedsReplan=true;armed=false
+        return Match(progress:progress,offset:0,arrived:false,needsReplan:true)
     }
 }

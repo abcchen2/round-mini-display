@@ -56,6 +56,7 @@ session.stop()
 
 MotorRoutes.mode = .success;session.start(original,simulate:false);trigger(session)
 check(!busy(session) && session.running && session.route?.id==newRoute.id,"success installs new route and releases lease")
+check(session.position==nil && session.turnDirection.isEmpty && session.turnMetres==0,"new route waits for a fresh fix instead of displaying the previous turn")
 session.stop()
 
 // Real session watchdog: suspend I/O without honoring cancellation, keep GPS callbacks active.
@@ -104,3 +105,92 @@ for i in 0..<1000 {_ = slow.update(long[i],accuracy:5,now:Double(i))}
 let slowSeconds=ProcessInfo.processInfo.systemUptime-oldAt
 print("MATCHER macOS host (not iPhone): optimized=\(fastSeconds)s baseline=\(slowSeconds)s for 1000 fixes / 150000 points")
 print("PASS production Swift session, timeout/empty/failure/cancellation/late results, geometry parity: \(checks) checks")
+
+// Exercise the actual render loop, including a journey that starts inside the near gate.
+do {
+    let p = MotorPoint(lat:30,lng:104)
+    let end = MotorPoint(lat:30+150.0/111320,lng:104)
+    let short = MotorRoute(request:MotorRequest(start:p,end:end),points:[p,end],
+        steps:[MotorStep(instruction:"右转",road:"A",action:"右转",end:1,distance:150)],seconds:60)
+    Speech.shared.messages=[]
+    BleLink.shared.messages=[];MapFeeder.shared.locations=[]
+    session.start(short,simulate:false)
+    check(session.speed==0 && session.position==nil && Speech.shared.messages.isEmpty,"real navigation waits for a fix without simulated speed or speech")
+    check(MapFeeder.shared.locations.isEmpty && !BleLink.shared.messages.contains("#x,0") && !BleLink.shared.messages.contains("#v,60"),"planning origin is not published as a live position")
+    check(BleLink.shared.messages.contains("#NW,1"),"device uses the neutral waiting state before first GPS")
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages.count==1,"starting inside 200m must not alternate 200/500m announcements")
+    session.stop();Speech.shared.messages=[]
+    session.start(short,simulate:true)
+    session.paused=true
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages.count==1,"simulated navigation uses the same one-time gates")
+    session.stop()
+
+    Speech.shared.messages=[]
+    session.start(original,simulate:false)
+    WebRouteMetadata.shared.lampDistances=[40,300,800]
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages==["前方路口，注意信号灯"],"starting within 60m must skip the outdated 300m gate")
+    for along in [100.0,250,260,290,310,520,750] {
+        session.progress=along
+        for _ in 0..<20 {session.render(p,off:0)}
+    }
+    check(Speech.shared.messages==["前方路口，注意信号灯","前方200米有红绿灯","前方路口，注意信号灯","前方280米有红绿灯","前方路口，注意信号灯"],
+        "each light advances through its gates once and speaks its actual distance")
+    session.stop()
+
+    let nearTurn = MotorRoute(request:MotorRequest(start:p,end:original.points.last!),points:original.points,
+        steps:[MotorStep(instruction:"右转",road:"A",action:"右转",end:1,distance:400)],seconds:200)
+    session.start(nearTurn,simulate:false);WebRouteMetadata.shared.lampDistances=[40]
+    Speech.shared.messages=[]
+    session.progress=session.cum.last!*0.6 // 160m to the turn; light also lies within 60m.
+    WebRouteMetadata.shared.lampDistances=[session.progress+40]
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages.count==1 && Speech.shared.messages[0].contains("右转"),"near turns suppress traffic-light speech")
+    session.stop()
+    Speech.shared.messages=[];session.start(short,simulate:false)
+    check(Speech.shared.messages.isEmpty,"restart also waits for a physical fix")
+    session.onFix(fix(p.lat,p.lng))
+    check(Speech.shared.messages.count==1,"new journey resets all announcement gates")
+    check(session.position != nil && session.speed==28,"first physical fix supplies the actual position and measured speed")
+    session.stop()
+    print("PASS real/simulated render-loop speech, stopped vehicle, consecutive lights, turn priority and restart")
+}
+
+do {
+    let origin=MotorPoint(lat:30,lng:104),far=MotorPoint(lat:30+8000.0/111320,lng:104)
+    let points=[origin,far,origin,far]
+    let route=MotorRoute(request:MotorRequest(start:origin,end:far),points:points,
+        steps:[MotorStep(instruction:"old turn",road:"A",action:"左转",end:3)],seconds:900)
+    session.start(route,simulate:false)
+    var interrupted=MotorRouteTracker(points)
+    _=interrupted.update(origin,accuracy:5,now:ProcessInfo.processInfo.systemUptime-1000)
+    session.tracker=interrupted;MotorRoutes.mode = .failure
+    Speech.shared.messages=[];BleLink.shared.messages=[]
+    let calls=MotorRoutes.calls
+    session.onFix(fix(30+4000.0/111320,104));spin(0.45)
+    session.onFix(fix(30+4020.0/111320,104));spin(0.2)
+    check(session.recoveringPosition && MotorRoutes.calls==calls+1,"ambiguous recovered positions trigger bounded replanning")
+    check(session.position != nil && session.turnDirection.isEmpty && session.turnMetres==0,"phone follows the recovered position without the old turn")
+    check(session.status.contains("重算失败"),"failed recovery replan keeps its error visible")
+    for i in 1...3 {
+        spin(0.45);session.onFix(fix(30+(4020+Double(i)*10)/111320,104))
+    }
+    check(MotorRoutes.calls==calls+1 && session.recoveringPosition,"cooldown does not restart plans on every GPS fix")
+    check(Speech.shared.messages.isEmpty && !BleLink.shared.messages.contains(where:{$0.hasPrefix("L,")}),"failed/pending recovery cannot replay old guidance")
+    session.stop()
+
+    let shapeOnly=MotorRoute(request:MotorRequest(start:origin,end:far),points:[origin,far],
+        steps:[MotorStep(instruction:"左家庄路",road:"左家庄路",action:"",end:1)],seconds:500,detailedGuidance:false)
+    Speech.shared.messages=[];BleLink.shared.messages=[]
+    session.start(shapeOnly,simulate:true);session.paused=true
+    check(session.turnDirection.isEmpty && Speech.shared.messages.isEmpty,"a geometry-only route has no fabricated turn or turn speech")
+    let turns=Set(["L","R","S","SL","SR","U"])
+    check(!BleLink.shared.messages.contains(where:{turns.contains(String($0.split(separator:",").first ?? ""))}),"device does not receive a fabricated straight/left/right instruction")
+    WebRouteMetadata.shared.lampDistances=[40]
+    session.render(origin,off:0)
+    check(Speech.shared.messages==["前方路口，注意信号灯"],"verified lamp events remain independent of missing maneuver data")
+    session.stop()
+    print("PASS first-GPS startup, persistent recovery suppression/cooldown and geometry-only route guidance")
+}
