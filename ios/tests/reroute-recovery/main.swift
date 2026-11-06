@@ -243,6 +243,7 @@ do {
     let calls=MotorRoutes.calls
     session.onFix(live(p(40)))
     check(session.turnMetres==60 && session.turnDirection=="L","real session measures remaining geometry rather than the supplied 800m length")
+    check((85...88).contains(session.remainingSeconds),"fallback ETA uses the same geometric distance as live remaining metres")
     check(Speech.shared.messages==["前方60米，左转"] && !session.instruction.contains("800"),"voice and banner contain no fixed-length provider prose")
     spin(1);session.onFix(live(p(98)))
     check(session.turnDirection=="L","next right turn is not displayed before completing the left turn")

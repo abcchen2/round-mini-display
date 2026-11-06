@@ -449,7 +449,7 @@ final class WebMotorSession: ObservableObject {
             roadSent = instruction
             if let img = TextImage.render(String(instruction.prefix(160)),maxW:290,size:26,minSize:18) { BleLink.shared.sendImage(slot:0,w:img.w,h:img.h,data:img.data) }
         }
-        let seconds = route.steps.contains(where:{$0.duration>0}) ? Int(Double(step.duration)*fraction)+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.duration)} : Int(Double(route.seconds)*Double(remaining)/max(1,Double(route.totalMeters)))
+        let seconds = route.steps.contains(where:{$0.duration>0}) ? Int(Double(step.duration)*fraction)+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.duration)} : Int(Double(route.seconds)*Double(remaining)/max(1,cum.last ?? 0))
         remainingSeconds=seconds
         let eta = Self.etaFormatter.string(from: Date().addingTimeInterval(Double(seconds)))
         BleLink.shared.send("#e,\(remaining),\(eta),0")
@@ -458,7 +458,7 @@ final class WebMotorSession: ObservableObject {
             footerSent = footer
             if let img = TextImage.render(footer,maxW:240,size:19,minSize:15) { BleLink.shared.sendImage(slot:1,w:img.w,h:img.h,data:img.data) }
         }
-        // 转向播报：500 / 200 米两档，每段每档只念一次；文案仍用实际距离，不说虚数。
+        // 转向播报：500 / 200 / 30 米三档，每段每档只念一次；文案使用实际剩余距离。
         var spokeTurn = false
         if route.detailedGuidance, off <= routeTolerance, !rerouting,!arrivalCandidate,
            turnAnnouncements.take(event: stepIndex, distance: distance, gates: Self.turnGates) != nil {
