@@ -14,9 +14,10 @@ final class IndependentPlanner:ObservableObject {
     @Published var selected=0
     @Published var busy=false
     @Published var message=""
+    @Published private(set) var verificationPage:URL?
     private var generation=UUID()
     private var task:Task<Void,Never>?
-    func invalidate(){generation=UUID();task?.cancel();task=nil;routes=[];selected=0;busy=false}
+    func invalidate(){generation=UUID();task?.cancel();task=nil;routes=[];selected=0;busy=false;verificationPage=nil}
     func load(_ entry:SavedMotorPlan){
         guard entry.valid else{return}
         invalidate();start=entry.request.start;end=entry.request.end;vias=entry.request.vias
@@ -36,6 +37,7 @@ final class IndependentPlanner:ObservableObject {
         guard let end=end else{message="请选择目的地";return}
         invalidate();let token=generation
         let request=MotorRequest(start:origin,end:end,vias:mode == .bicycle ? []:vias,bicycle:mode == .bicycle)
+        verificationPage = mode == .motorcycle ? request.page:nil
         busy=true;message="正在规划\(mode.rawValue)路线…"
         task=Task { @MainActor [weak self] in
             do{
@@ -55,14 +57,18 @@ final class IndependentPlanner:ObservableObject {
 struct MotorLoginView:View {
     @StateObject private var browser=MotorBrowser()
     let page:URL?
+    let done:()->Void
     @Environment(\.dismiss) private var dismiss
     var body:some View {
         NavigationView{
             VStack{
-                Text("仅在登录或验证时打开网页。登录保存在本机，正常规划可直接在 App 完成。").font(.caption).padding()
+                Text("请在当前路线页面检查登录或验证提示；完成后点右上角重试。登录信息保存在本机。").font(.caption).padding()
                 MotorBrowserView(browser:browser)
                 Text(ContentView.userMessage(browser.status)).font(.caption)
-            }.navigationTitle("高德登录／验证").toolbar{ToolbarItem(placement:.confirmationAction){Button("完成"){dismiss()}}}
+            }.navigationTitle("高德登录／验证").toolbar{
+                ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}}
+                ToolbarItem(placement:.confirmationAction){Button("完成并重试"){dismiss();done()}}
+            }
         }.onAppear{if let page=page{browser.web.load(URLRequest(url:page))}}
     }
 }
@@ -105,7 +111,7 @@ struct IndependentPlannerView:View {
         }
         .sheet(isPresented:$waypoints){RouteWaypointEditor(points:model.vias,near:model.start){points in model.vias=points;model.invalidate()}}
         .sheet(isPresented:$showHistory){MotorHistoryView(bicycle:mode == .bicycle){entry in model.load(entry)}}
-        .sheet(isPresented:$login){MotorLoginView(page:nil)}
+        .sheet(isPresented:$login){MotorLoginView(page:model.verificationPage){model.plan(mode)}}
         .onAppear{
             guard !loaded else{return};loaded=true
             LocationService.shared.start()

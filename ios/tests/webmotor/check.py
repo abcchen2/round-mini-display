@@ -55,6 +55,7 @@ core+=(root/'MotoNav/PhoneClockSync.swift').read_text()+'\n'
 core+=(root/'MotoNav/MotorPlanHistory.swift').read_text()+'\n'
 tests+='\n'+(root/'tests/parity-016/main.swift').read_text()
 tests+='\n'+(root/'tests/bicycle-planning/main.swift').read_text()
+tests+='\n'+(root/'tests/webmotor/planning-regressions.swift').read_text()
 folder=Path(tempfile.mkdtemp(prefix='motonav-core-'))
 (folder/'main.swift').write_text('import Foundation\n'+core+tests)
 subprocess.run(['swiftc',str(folder/'main.swift'),'-o',str(folder/'test')],check=True)

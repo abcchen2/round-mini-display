@@ -73,6 +73,17 @@ enum MotorArrival {
         remaining <= 15 && offset <= 35 && endpointDistance <= 35
     }
 }
+/// Per-route events advance only toward nearer gates, even while GPS distance jitters.
+struct MotorAnnouncementGate {
+    private var closest: [Int: Int] = [:]
+    mutating func take(event: Int, distance: Int, gates: [Int]) -> Int? {
+        guard distance >= 0, let gate = gates.filter({ distance <= $0 }).min(),
+              gate < (closest[event] ?? Int.max) else { return nil }
+        closest[event] = gate
+        return gate
+    }
+}
+
 enum MotorRoutes {
     static let ua = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     private final class NoRedirects: NSObject,URLSessionTaskDelegate {
@@ -125,17 +136,40 @@ enum MotorRoutes {
                     DispatchQueue.main.async {WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie){c.resume()}}
                 }
             }
-            if [401,403].contains(response.statusCode) {throw AmapShare.Fail("高德要求登录或网页验证，请点“高德登录／验证”处理后重试")}
+            if response.statusCode==401 {throw AmapShare.Fail("高德要求登录，请点“高德登录／验证”处理后重试（状态码：401）")}
+            if response.statusCode==403 {throw AmapShare.Fail("高德暂时拒绝规划请求（状态码：403），请在“高德登录／验证”的路线页面检查是否要求验证")}
             if response.statusCode==429 {throw AmapShare.Fail("请求较频繁，请稍后再试")}
         }
-        guard (response as? HTTPURLResponse)?.statusCode == 200, bytes.count <= 8*1024*1024 else { throw AmapShare.Fail("网页算路请求失败或数据过大") }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw AmapShare.Fail("摩托车规划服务暂不可用（状态码：\((response as? HTTPURLResponse)?.statusCode ?? 0)），请稍后重试")
+        }
+        guard bytes.count <= 8*1024*1024 else { throw AmapShare.Fail("摩托车路线数据过大，请缩短路线后重试") }
         try Task.checkCancellation()
         let parsing=Task.detached(priority:.userInitiated) { try Self.parse(bytes,request:request) }
         return try await withTaskCancellationHandler(operation:{try await parsing.value},onCancel:{parsing.cancel()})
     }
     static func parse(_ bytes: Data, request: MotorRequest) throws -> [MotorRoute] {
-        guard let json = try JSONSerialization.jsonObject(with: bytes) as? [String: Any], (json["code"] as? NSNumber)?.intValue == 1,
-              let paths = json["data"] as? [[String: Any]], (1...10).contains(paths.count) else { throw AmapShare.Fail("高德未返回摩托车路线，请回网页检查登录或验证提示") }
+        guard let json = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else {
+            throw AmapShare.Fail("高德返回的摩托车规划数据无法识别，请稍后重试")
+        }
+        guard (json["code"] as? NSNumber)?.intValue == 1 else {
+            // Only explicit server hints indicate authentication. Never display raw payloads:
+            // they may contain URLs, request coordinates or account information.
+            let hint = ["message", "msg", "info"].compactMap { json[$0] as? String }
+                .map { String($0.prefix(256)).lowercased() }.joined(separator: " ")
+            if ["未登录", "请登录", "请先登录", "登录失效", "登录过期", "not login", "not logged in", "login required"].contains(where: { hint.contains($0) }) {
+                throw AmapShare.Fail("高德要求登录，请点“高德登录／验证”处理后重试")
+            }
+            if ["验证码", "安全验证", "人机验证", "captcha"].contains(where: { hint.contains($0) }) {
+                throw AmapShare.Fail("高德要求网页验证，请点“高德登录／验证”处理后重试")
+            }
+            let code = (json["code"] as? NSNumber).map { "（服务代码：\($0.intValue)）" } ?? ""
+            throw AmapShare.Fail("高德暂未返回摩托车路线\(code)，请检查起终点或稍后重试")
+        }
+        guard let paths = json["data"] as? [[String: Any]], paths.count <= 10 else {
+            throw AmapShare.Fail("高德返回的摩托车路线格式异常，请稍后重试")
+        }
+        guard !paths.isEmpty else { throw AmapShare.Fail("高德未找到可用摩托车路线，请调整起终点后重试") }
         return try paths.map { path in
             try Task.checkCancellation()
             guard let steps = path["steps"] as? [[String: Any]], !steps.isEmpty, steps.count <= 10000 else { throw AmapShare.Fail("路线缺少分段") }
@@ -173,9 +207,9 @@ final class WebMotorSession: ObservableObject {
     @Published var position: MotorPoint?
     @Published var arrived = false
     @Published var overview = false
-    private var cum: [Double] = [], progress = 0.0, timer: Timer?, token = UUID(), announced = ""
-    /// 红绿灯播报：记住已念过的（灯位+档位）key，避免同一盏灯每帧重播
-    private var lampAnnounced = ""
+    private var cum: [Double] = [], progress = 0.0, timer: Timer?, token = UUID()
+    private var turnAnnouncements = MotorAnnouncementGate()
+    private var lampAnnouncements = MotorAnnouncementGate()
     private static let lampGates = [300, 60]
     /// 转向播报档位（由近到远试）。原来按 distance/100 去重，500→498 时会 2 米内连播两句。
     private static let turnGates = [500, 200]
@@ -203,7 +237,7 @@ final class WebMotorSession: ObservableObject {
         tracker=MotorRouteTracker(route.points);confirmedArrival=false;metadataSuspended=false;simulationTick=nil;realHeading=nil
         speed = NavigationSpeed.values.contains(simulationSpeed) ? simulationSpeed : 60; reroutePolicy.reset();routeTolerance=25;statusUntil=0; nextVia = 0; lastFix = nil; viaProgress = route.request.vias.map { v in nearestAlong(v) }
         roadSent = ""; footerSent = ""; startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil
-        announced = ""; lampAnnounced = ""
+        turnAnnouncements = MotorAnnouncementGate(); lampAnnouncements = MotorAnnouncementGate()
         status = simulate ? "模拟导航" : "定位导航"; token = UUID()
         UIApplication.shared.isIdleTimerDisabled = true
         MapFeeder.shared.onNaviStart(); BleLink.shared.send("C")
@@ -301,8 +335,8 @@ final class WebMotorSession: ObservableObject {
                 guard let new=routes.first else {throw AmapShare.Fail("未返回可用路线")}
                 self.route=new;self.cum=new.cum;self.progress=0;self.stepIndex=0;self.nextVia=0
                 self.tracker=MotorRouteTracker(new.points);self.confirmedArrival=false;self.lastFix=nil;self.previousFix=nil;self.metadataSuspended=false
-                self.roadSent="";self.footerSent="";self.announced=""
-                self.lampAnnounced=""
+                self.roadSent="";self.footerSent=""
+                self.turnAnnouncements = MotorAnnouncementGate(); self.lampAnnouncements = MotorAnnouncementGate()
                 self.viaProgress=new.request.vias.map{v in self.nearestAlong(v)}
                 MapFeeder.shared.prepareRoute(key:new.id.uuidString,coords:new.coords)
                 WebRouteMetadata.shared.load(new);succeeded=true
@@ -357,31 +391,23 @@ final class WebMotorSession: ObservableObject {
             if let img = TextImage.render(footer,maxW:240,size:19,minSize:15) { BleLink.shared.sendImage(slot:1,w:img.w,h:img.h,data:img.data) }
         }
         // 转向播报：500 / 200 米两档，每段每档只念一次；文案仍用实际距离，不说虚数。
-        if route.detailedGuidance, off <= routeTolerance, !rerouting, distance <= 500 {
-            for gate in Self.turnGates.reversed() where distance <= gate {
-                let key = "turn-\(stepIndex)-\(gate)"
-                if announced != key {
-                    announced = key; Speech.shared.speak("前方\(distance)米，\(instruction)")
-                    break
-                }
-            }
+        var spokeTurn = false
+        if route.detailedGuidance, off <= routeTolerance, !rerouting,
+           turnAnnouncements.take(event: stepIndex, distance: distance, gates: Self.turnGates) != nil {
+            Speech.shared.speak("前方\(distance)米，\(instruction)")
+            spokeTurn = true
         }
         // 高德把几公里直行并成一个转向分段，长直行里上面那条永远不会响 —— 红绿灯单独成事件。
         // 坐标来自 WebRouteMetadata 的驾车 SDK 旁路，已投影成“距起点多少米”。
         // distance > 200 是让位规则：进到转向播报范围就只播转向，不抢话。
-        if route.detailedGuidance, off <= routeTolerance, !rerouting, distance > 200 {
+        if route.detailedGuidance, off <= routeTolerance, !rerouting, distance > 200, !spokeTurn {
             // 按沿程距离找当前这盏灯，不靠索引递增：偏航重算后元数据重载也不会串位
             let lamps = WebRouteMetadata.shared.lampDistances
-            if let i = lamps.firstIndex(where: { $0 >= progress - 5 }) {
+            if let i = lamps.firstIndex(where: { $0 >= progress }) {
                 let toLamp = Int((lamps[i] - progress).rounded())
                 // 由近到远试档位：定位跳变时先命中的是更近的档，不会把 40 米说成 300 米
-                for gate in Self.lampGates.reversed() where toLamp <= gate {
-                    let key = "lamp-\(Int(lamps[i]))-\(gate)"
-                    if lampAnnounced != key {
-                        lampAnnounced = key
-                        Speech.shared.speak(gate == Self.lampGates.last! ? "前方路口，注意信号灯" : "前方\(gate)米有红绿灯")
-                        break
-                    }
+                if let gate = lampAnnouncements.take(event: Int(lamps[i]), distance: toLamp, gates: Self.lampGates) {
+                    Speech.shared.speak(gate == Self.lampGates.last! ? "前方路口，注意信号灯" : "前方\(toLamp)米有红绿灯")
                 }
             }
         }

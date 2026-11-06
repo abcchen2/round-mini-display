@@ -104,3 +104,48 @@ for i in 0..<1000 {_ = slow.update(long[i],accuracy:5,now:Double(i))}
 let slowSeconds=ProcessInfo.processInfo.systemUptime-oldAt
 print("MATCHER macOS host (not iPhone): optimized=\(fastSeconds)s baseline=\(slowSeconds)s for 1000 fixes / 150000 points")
 print("PASS production Swift session, timeout/empty/failure/cancellation/late results, geometry parity: \(checks) checks")
+
+// Exercise the actual render loop, including a journey that starts inside the near gate.
+do {
+    let p = MotorPoint(lat:30,lng:104)
+    let end = MotorPoint(lat:30+150.0/111320,lng:104)
+    let short = MotorRoute(request:MotorRequest(start:p,end:end),points:[p,end],
+        steps:[MotorStep(instruction:"右转",road:"A",action:"右转",end:1,distance:150)],seconds:60)
+    Speech.shared.messages=[]
+    session.start(short,simulate:false)
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages.count==1,"starting inside 200m must not alternate 200/500m announcements")
+    session.stop();Speech.shared.messages=[]
+    session.start(short,simulate:true)
+    session.paused=true
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages.count==1,"simulated navigation uses the same one-time gates")
+    session.stop()
+
+    Speech.shared.messages=[]
+    session.start(original,simulate:false)
+    WebRouteMetadata.shared.lampDistances=[40,300,800]
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages==["前方路口，注意信号灯"],"starting within 60m must skip the outdated 300m gate")
+    for along in [100.0,250,260,290,310,520,750] {
+        session.progress=along
+        for _ in 0..<20 {session.render(p,off:0)}
+    }
+    check(Speech.shared.messages==["前方路口，注意信号灯","前方200米有红绿灯","前方路口，注意信号灯","前方280米有红绿灯","前方路口，注意信号灯"],
+        "each light advances through its gates once and speaks its actual distance")
+    session.stop()
+
+    let nearTurn = MotorRoute(request:MotorRequest(start:p,end:original.points.last!),points:original.points,
+        steps:[MotorStep(instruction:"右转",road:"A",action:"右转",end:1,distance:400)],seconds:200)
+    session.start(nearTurn,simulate:false);WebRouteMetadata.shared.lampDistances=[40]
+    Speech.shared.messages=[]
+    session.progress=session.cum.last!*0.6 // 160m to the turn; light also lies within 60m.
+    WebRouteMetadata.shared.lampDistances=[session.progress+40]
+    for _ in 0..<200 {session.render(p,off:0)}
+    check(Speech.shared.messages.count==1 && Speech.shared.messages[0].contains("右转"),"near turns suppress traffic-light speech")
+    session.stop()
+    Speech.shared.messages=[];session.start(short,simulate:false)
+    check(Speech.shared.messages.count==1,"new journey resets all announcement gates")
+    session.stop()
+    print("PASS real/simulated render-loop speech, stopped vehicle, consecutive lights, turn priority and restart")
+}
