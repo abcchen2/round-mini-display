@@ -28,8 +28,38 @@ for (kmh,expected) in [(20,6.0),(30,5.0),(60,3.0)] {
 var jitter=MotorReroutePolicy()
 for i in 0..<30 {check(!jitter.observe(offset:i%2==0 ? 35:10,accuracy:5,now:Double(i)),"one-frame GPS jumps cannot replan")}
 var inaccurate=MotorReroutePolicy()
-for i in 0..<10 {check(!inaccurate.observe(offset:45,accuracy:30,now:Double(i)),"uncertain positioning must raise threshold")}
+for i in 0..<10 {check(!inaccurate.observe(offset:35,accuracy:30,now:Double(i)),"uncertain positioning must raise threshold")}
 check(!inaccurate.observe(offset:100,accuracy:55,now:20),"invalid accuracy rejected")
+// 城市里常见 35~50 米精度：门限封顶 60 米，不再要偏出 80 米才重算
+check(MotorReroutePolicy.threshold(accuracy:50)==60 && MotorReroutePolicy.threshold(accuracy:5)==25,"threshold capped for typical urban accuracy")
+var urban=MotorReroutePolicy()
+check(!urban.observe(offset:65,accuracy:45,now:0) && urban.observe(offset:65,accuracy:45,now:1),"poor accuracy still confirms a 65m deviation in two fixes")
+// 迟滞：门限附近抖动（介于 0.6 倍门限和门限之间）不清零已累计的偏航确认
+var hysteresis=MotorReroutePolicy()
+check(!hysteresis.observe(offset:30,accuracy:5,now:0) && !hysteresis.observe(offset:20,accuracy:5,now:1),"near-threshold jitter holds")
+check(hysteresis.observe(offset:30,accuracy:5,now:2),"second off-route fix after jitter confirms deviation")
+// 逆向行驶：偏移几乎为 0，靠航向 3 笔 / 2 秒确认
+var reverse=MotorReroutePolicy()
+check(!reverse.observe(offset:3,accuracy:5,now:0,headingDelta:175) && !reverse.observe(offset:3,accuracy:5,now:1,headingDelta:170),"reverse needs three fixes")
+check(reverse.observe(offset:4,accuracy:5,now:2,headingDelta:178),"reverse travel triggers replan without lateral offset")
+// 小角度分叉：偏移 18 米未到 25 米门限，但航向偏 50 度持续 3 笔
+var fork=MotorReroutePolicy()
+check(!fork.observe(offset:16,accuracy:5,now:0,headingDelta:50) && !fork.observe(offset:17,accuracy:5,now:1,headingDelta:50),"fork needs three fixes")
+check(fork.observe(offset:18,accuracy:5,now:2,headingDelta:50),"diverging course confirms a fork early")
+var curve=MotorReroutePolicy()
+for i in 0..<10 {check(!curve.observe(offset:6,accuracy:5,now:Double(i),headingDelta:60),"on-route curve lag never replans")}
+var flicker=MotorReroutePolicy()
+for i in 0..<10 {check(!flicker.observe(offset:3,accuracy:5,now:Double(i),headingDelta:i%2==0 ? 170:10),"single reversed course samples never replan")}
+// 跟踪器：同一位置正反两条通道（往返路 / 掉头），按行驶方向选通道
+do {
+    let a=MotorPoint(lat:30,lng:104),b=MotorPoint(lat:30+300.0/111320,lng:104)
+    var outBack=MotorRouteTracker([a,b,a])
+    _=outBack.update(MotorPoint(lat:30+280.0/111320,lng:104),accuracy:5,now:0,heading:0)
+    _=outBack.update(MotorPoint(lat:30+299.0/111320,lng:104),accuracy:5,now:1,heading:0)
+    let back=outBack.update(MotorPoint(lat:30+285.0/111320,lng:104),accuracy:5,now:2,heading:180)!
+    check(back.progress>310,"heading selects the return passage after a U-turn")
+    check(abs((outBack.bearing(at:back.progress) ?? 0)-180)<1 || abs((outBack.bearing(at:back.progress) ?? 0)+180)<1,"route bearing follows the selected passage")
+}
 var gap=MotorReroutePolicy();_ = gap.observe(offset:40,accuracy:5,now:0)
 check(!gap.observe(offset:40,accuracy:5,now:4),"GPS gap resets confirmation")
 check(gap.observe(offset:40,accuracy:5,now:5),"confirmation resumes with new valid fixes")
@@ -140,7 +170,8 @@ do {
         "each light advances through its gates once and speaks its actual distance")
     session.stop()
 
-    let nearTurn = MotorRoute(request:MotorRequest(start:p,end:original.points.last!),points:original.points,
+    let turnEnd=MotorPoint(lat:p.lat+400.0/111320,lng:p.lng)
+    let nearTurn = MotorRoute(request:MotorRequest(start:p,end:turnEnd),points:[p,turnEnd],
         steps:[MotorStep(instruction:"右转",road:"A",action:"右转",end:1,distance:400)],seconds:200)
     session.start(nearTurn,simulate:false);WebRouteMetadata.shared.lampDistances=[40]
     Speech.shared.messages=[]
@@ -193,4 +224,69 @@ do {
     check(Speech.shared.messages==["前方路口，注意信号灯"],"verified lamp events remain independent of missing maneuver data")
     session.stop()
     print("PASS first-GPS startup, persistent recovery suppression/cooldown and geometry-only route guidance")
+}
+
+do {
+    func p(_ n:Double,_ e:Double=0)->MotorPoint {MotorPoint(lat:30+n/111320,lng:104+e/(111320*cos(30 * Double.pi/180)))}
+    func live(_ point:MotorPoint,_ course:Double=0,_ accuracy:Double=5)->CLLocation {
+        CLLocation(coordinate:CLLocationCoordinate2D(latitude:point.lat,longitude:point.lng),altitude:0,
+            horizontalAccuracy:accuracy,verticalAccuracy:5,course:course,courseAccuracy:5,speed:6,speedAccuracy:1,timestamp:Date())
+    }
+    let points=[p(0),p(100),p(100,-100),p(200,-100)]
+    let turns=MotorRoute(request:MotorRequest(start:points[0],end:points[3]),points:points,steps:[
+        MotorStep(instruction:"沿甲路行驶800米左转",road:"甲路",action:"左转",end:1,start:0,distance:800),
+        MotorStep(instruction:"沿乙路行驶900米右转",road:"乙路",action:"右转",end:2,start:1,distance:900),
+        MotorStep(instruction:"到达终点",road:"丙路",action:"到达",end:3,start:2,distance:100)
+    ],seconds:100)
+    Speech.shared.messages=[];MotorRoutes.mode = .failure
+    session.start(turns,simulate:false)
+    let calls=MotorRoutes.calls
+    session.onFix(live(p(40)))
+    check(session.turnMetres==60 && session.turnDirection=="L","real session measures remaining geometry rather than the supplied 800m length")
+    check((85...88).contains(session.remainingSeconds),"fallback ETA uses the same geometric distance as live remaining metres")
+    check(Speech.shared.messages==["前方60米，左转"] && !session.instruction.contains("800"),"voice and banner contain no fixed-length provider prose")
+    spin(1);session.onFix(live(p(98)))
+    check(session.turnDirection=="L","next right turn is not displayed before completing the left turn")
+    spin(1);session.onFix(live(p(100,-12),270))
+    check(session.turnDirection=="L","one outgoing fix cannot advance the maneuver")
+    spin(1);session.onFix(live(p(100,-18),270))
+    check(session.turnDirection=="R" && abs(session.turnMetres-82)<=1,"two outgoing fixes advance to the next turn with fresh remaining distance")
+    check(session.route?.id==turns.id && MotorRoutes.calls==calls,"following the left turn neither changes the polyline nor silently replans")
+    session.stop()
+
+    let terminal=MotorRoute(request:MotorRequest(start:p(0),end:p(1000)),points:[p(0),p(1000)],
+        steps:[MotorStep(instruction:"到达终点",road:"园区入口",action:"到达",end:1,distance:1000)],seconds:120)
+    session.start(terminal,simulate:false);session.onFix(live(p(940),0,35))
+    MotorRoutes.mode = .suspend;session.replan(p(940));spin(0.2)
+    check(busy(session),"fixture has an in-flight route before arrival candidate")
+    let beforeArrival=MotorRoutes.calls
+    spin(1);session.onFix(live(p(992,6),0,35))
+    check(session.arrivalCandidate && !busy(session),"entering terminal zone cancels normal rerouting")
+    let pending=MotorRoutes.waiting.removeFirst();pending.resume(returning:[newRoute]);spin(0.1)
+    check(session.route?.id==terminal.id,"late route result cannot replace a terminal candidate")
+    spin(1);session.onFix(live(p(1000,37),90,8))
+    check(session.arrivalCandidate && !session.arrived,"turning inside the site keeps the terminal candidate")
+    spin(1);session.onFix(live(p(1000,41),90,8))
+    check(session.arrived && !session.running && MotorRoutes.calls==beforeArrival,"arrival completes despite a few remaining meters and never requests a U-turn back")
+    let completedCalls=MotorRoutes.calls
+    session.onFix(live(p(1100,80),90,8))
+    check(MotorRoutes.calls==completedCalls && session.arrived,"completed trip cannot be reopened by later fixes")
+    session.stop()
+
+    let dynamic=MotorRequest(start:MotorPoint(lat:30,lng:104,name:"我的位置"),end:p(1000),startFromCurrentLocation:true)
+    let planner=IndependentPlanner()
+    planner.load(SavedMotorPlan(date:Date(),request:dynamic,distance:1000,seconds:120))
+    check(planner.start==nil,"history keeps dynamic current-location semantics")
+    LocationService.shared.location=live(p(500))
+    MotorRoutes.mode = .success;MotorRoutes.answer=terminal
+    planner.plan(.motorcycle);spin(0.2)
+    check(MotorRoutes.requests.last?.start.lat==p(500).lat && MotorRoutes.requests.last?.usesCurrentLocation==true,
+        "planning after moving resolves the current fix instead of reusing the old origin")
+    var manual=dynamic;manual.start=p(100);manual.startFromCurrentLocation=false
+    planner.load(SavedMotorPlan(date:Date(),request:manual,distance:900,seconds:100))
+    planner.plan(.motorcycle);spin(0.2)
+    check(MotorRoutes.requests.last?.start.lat==p(100).lat && MotorRoutes.requests.last?.usesCurrentLocation==false,
+        "explicit fixed origins remain fixed")
+    planner.invalidate();LocationService.shared.location=nil
+    print("PASS production session: actual turn distances, left/right phases, terminal reroute suppression, arrival lock and fresh dynamic origin")
 }

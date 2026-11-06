@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B20A63E7A87949BD9DA0D001 /* MotorGuidance.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20A63E7A87949BD9DA0D002; };
 		9B6D19B8BC69488F80829232 /* MotorReroutePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B6D19B8BC69488F80829231; };
 		89775CCDB79F2856E5A7E09E /* AmapWebSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC592C6FB4D8E48C651C4116; };
 		4BF4E115BA533B657E2FB1F6 /* RouteWaypointEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E52D24621872459750C15D4; };
@@ -97,6 +98,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B20A63E7A87949BD9DA0D002 /* MotorGuidance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotorGuidance.swift; sourceTree = "<group>"; };
 		9B6D19B8BC69488F80829231 /* MotorReroutePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotorReroutePolicy.swift; sourceTree = "<group>"; };
 		FC592C6FB4D8E48C651C4116 /* AmapWebSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AmapWebSession.swift; sourceTree = "<group>"; };
 		9E52D24621872459750C15D4 /* RouteWaypointEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteWaypointEditor.swift; sourceTree = "<group>"; };
@@ -247,6 +249,7 @@
 				3F15BA9922292159C9E3A453 /* IndependentRouteView.swift */,
 				6C24EC3EE8F89E19A49E95D0 /* BicycleRoutes.swift */,
 				2F2E96A5A6C7C3BD314CB887 /* RouteGeometry.swift */,
+				B20A63E7A87949BD9DA0D002 /* MotorGuidance.swift */,
 				5CD06CCAE5FBBFC390CE8A18 /* MapStyles.swift */,
 				090501FEBA7A432B93BD00AB /* MapSampleReport.swift */,
 				C08E726101614C6B8182A8F4 /* MapReportExport.swift */,
@@ -478,6 +481,7 @@
 				094AC14B9BE91BA0103EED39 /* IndependentRouteView.swift in Sources */,
 				6B90C21D4B66F0C12248FD31 /* BicycleRoutes.swift in Sources */,
 				DF1DA6D4D4292EF2D1700130 /* RouteGeometry.swift in Sources */,
+				B20A63E7A87949BD9DA0D001 /* MotorGuidance.swift in Sources */,
 				0A1AD8E8441189C00F2C93DC /* MapStyles.swift in Sources */,
 				B57B31A65CFD4E0C83913744 /* MapSampleReport.swift in Sources */,
 				B08E726101614C6B8182A8F4 /* MapReportExport.swift in Sources */,
@@ -538,7 +542,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -622,7 +626,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -647,7 +651,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -674,7 +678,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;

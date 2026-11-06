@@ -20,7 +20,7 @@ final class IndependentPlanner:ObservableObject {
     func invalidate(){generation=UUID();task?.cancel();task=nil;routes=[];selected=0;busy=false;verificationPage=nil}
     func load(_ entry:SavedMotorPlan){
         guard entry.valid else{return}
-        invalidate();start=entry.request.start;end=entry.request.end;vias=entry.request.vias
+        invalidate();start=entry.request.usesCurrentLocation ? nil:entry.request.start;end=entry.request.end;vias=entry.request.vias
         message="已恢复起终点和途经点，点击规划获取最新路线"
     }
     func plan(_ mode:IndependentMode){
@@ -28,7 +28,7 @@ final class IndependentPlanner:ObservableObject {
         guard !Settings.shared.keysMissing else{message="请先填写自己的高德 iOS Key";return}
         let origin:MotorPoint
         if let start=start{origin=start}else{
-            guard let fix=LocationService.shared.location,fix.horizontalAccuracy>=0,fix.horizontalAccuracy<=100,abs(fix.timestamp.timeIntervalSinceNow)<15 else{
+            guard let fix=LocationService.shared.location,fix.horizontalAccuracy>=0,fix.horizontalAccuracy<=50,abs(fix.timestamp.timeIntervalSinceNow)<15 else{
                 message="当前位置尚未就绪，请等待定位或手动选择起点";LocationService.shared.start();return
             }
             let g=MapGeo.wgsToGcj(fix.coordinate.latitude,fix.coordinate.longitude)
@@ -36,12 +36,18 @@ final class IndependentPlanner:ObservableObject {
         }
         guard let end=end else{message="请选择目的地";return}
         invalidate();let token=generation
-        let request=MotorRequest(start:origin,end:end,vias:mode == .bicycle ? []:vias,bicycle:mode == .bicycle)
+        let request=MotorRequest(start:origin,end:end,vias:mode == .bicycle ? []:vias,bicycle:mode == .bicycle,startFromCurrentLocation:start == nil)
+        let heading=LocationService.shared.location.flatMap { fix -> Double? in
+            guard abs(fix.timestamp.timeIntervalSinceNow)<3 else {return nil}
+            let current=MapGeo.wgsToGcj(fix.coordinate.latitude,fix.coordinate.longitude)
+            guard RouteShape.metres(origin,MotorPoint(lat:current.lat,lng:current.lng))<=35 else {return nil}
+            return WebMotorSession.reliableCourse(fix)
+        }
         verificationPage = mode == .motorcycle ? request.page:nil
         busy=true;message="正在规划\(mode.rawValue)路线…"
         task=Task { @MainActor [weak self] in
             do{
-                let result=try await MotorRoutes.load(request)
+                let result=MotorRouteSelection.ordered(try await MotorRoutes.load(request),from:origin,heading:heading)
                 guard let self=self,self.generation==token,!Task.isCancelled else{return}
                 self.routes=result;self.selected=0;self.busy=false
                 self.message="已找到 \(result.count) 条路线，请选择方案"
@@ -116,7 +122,9 @@ struct IndependentPlannerView:View {
             guard !loaded else{return};loaded=true
             LocationService.shared.start()
             if let route=guide.route,route.request.bicycle == (mode == .bicycle),!guide.running{
-                model.start=route.request.start;model.end=route.request.end;model.vias=route.request.vias;model.routes=[route]
+                model.start=route.request.usesCurrentLocation ? nil:route.request.start;model.end=route.request.end;model.vias=route.request.vias
+                if route.request.usesCurrentLocation {model.routes=[];model.message="已恢复目的地，请按当前位置重新规划"}
+                else {model.routes=[route]}
             }
         }
     }
@@ -178,9 +186,10 @@ struct IndependentNavigationView: View {
                 HStack(alignment:.center,spacing:18){
                     Image(systemName:arrow).font(.system(size:48,weight:.bold)).foregroundColor(ContentView.pink).frame(width:58)
                     VStack(alignment:.leading,spacing:6){
-                        Text(guide.position == nil ? "等待定位" : guide.recoveringPosition ? "核对路线" : NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
+                        Text(guide.position == nil ? "等待定位" : guide.recoveringPosition ? "核对路线" : guide.arrivalCandidate ? "确认到达" : NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
                         Text(guide.instruction).font(.headline).lineLimit(2)
                         if !navigationNotice.isEmpty {Text(navigationNotice).font(.caption).foregroundColor(ContentView.sub)}
+                        if guide.replanCount>0 {Text("当前路线已重新规划 \(guide.replanCount) 次").font(.caption).foregroundColor(ContentView.sub)}
                     };Spacer(minLength:0)
                 }.padding(18).background(RoundedRectangle(cornerRadius:22).fill(ContentView.bg.opacity(0.94)))
                 Spacer()
@@ -210,6 +219,7 @@ struct IndependentNavigationView: View {
     }
     private var navigationNotice:String {
         if guide.position == nil {return "取得定位后开始指引"}
+        if guide.arrivalCandidate {return "已进入终点附近，正在确认到达"}
         if guide.status.contains("重算失败") {return "重新规划暂未完成，将保留当前路线"}
         if guide.recoveringPosition {return "正在按恢复的定位核对路线，稍后继续指引"}
         if guide.status.contains("正在重新规划") {return "偏离路线，正在重新规划…"}
@@ -220,6 +230,7 @@ struct IndependentNavigationView: View {
     }
     private var arrow:String {
         if guide.position == nil || guide.recoveringPosition {return "location.circle"}
+        if guide.arrivalCandidate {return "mappin.and.ellipse"}
         if guide.route?.detailedGuidance == false {return "point.topleft.down.curvedto.point.bottomright.up"}
         switch guide.turnDirection {case "L":return "arrow.turn.up.left";case "R":return "arrow.turn.up.right";case "SL":return "arrow.up.left";case "SR":return "arrow.up.right";case "U":return "arrow.uturn.down";default:return "arrow.up"}
     }
