@@ -9,6 +9,7 @@ session = web[web.index('final class WebMotorSession'):web.index('final class Mo
 # Expose only this entrypoint's visibility to test its post-stop guard; body is unchanged.
 session = session.replace('private func replan(_ point:', 'func replan(_ point:')
 session = session.replace('private func render(', 'func render(').replace('private var cum:', 'var cum:')
+session = session.replace('private var tracker:', 'var tracker:')
 core = '\n'.join((root/'MotoNav'/name).read_text() for name in [
     'RouteGeometry.swift', 'MotorRouteTracker.swift', 'MotorReroutePolicy.swift'])
 # Preserve the old production matcher as the output-parity/performance control.

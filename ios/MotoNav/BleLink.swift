@@ -253,6 +253,9 @@ final class BleLink: NSObject, ObservableObject {
     // MARK: - 发送
 
     private func keyOf(_ msg: String) -> String {
+        // These settings append their value without a comma; cache the command, not each value.
+        if msg == "#M0" || msg == "#M1" { return "#M" }
+        if msg.hasPrefix("#L"), Int(msg.dropFirst(2)) != nil { return "#L" }
         if msg.hasPrefix("#") { return String(msg.split(separator: ",", maxSplits: 1).first ?? "") }
         if msg == "P" { return "P" }
         return "NAV"                                    // 导航方向、到达 A、清屏 C

@@ -138,7 +138,7 @@ struct IndependentPlannerView:View {
         VStack(alignment:.leading,spacing:14){
             MotorMap(route:route,position:nil,overview:true).frame(height:260).clipShape(RoundedRectangle(cornerRadius:18))
             if !route.detailedGuidance {
-                Text("已取得路线轨迹，暂无分段转向指引，请按地图路线行进。")
+                Text("已取得路线轨迹，暂无分段转向指引。请跟随手机地图；圆屏暂显示等待指引。")
                     .font(.footnote).foregroundColor(ContentView.sub)
             }
             ForEach(Array(model.routes.enumerated()),id:\.offset){i,r in
@@ -178,7 +178,7 @@ struct IndependentNavigationView: View {
                 HStack(alignment:.center,spacing:18){
                     Image(systemName:arrow).font(.system(size:48,weight:.bold)).foregroundColor(ContentView.pink).frame(width:58)
                     VStack(alignment:.leading,spacing:6){
-                        Text(NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
+                        Text(guide.position == nil ? "等待定位" : guide.recoveringPosition ? "核对路线" : NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
                         Text(guide.instruction).font(.headline).lineLimit(2)
                         if !navigationNotice.isEmpty {Text(navigationNotice).font(.caption).foregroundColor(ContentView.sub)}
                     };Spacer(minLength:0)
@@ -209,7 +209,9 @@ struct IndependentNavigationView: View {
         .alert("结束导航？",isPresented:$confirmExit){Button("结束",role:.destructive){guide.stop();guide.arrived=false;dismiss()};Button("继续导航",role:.cancel){}}
     }
     private var navigationNotice:String {
+        if guide.position == nil {return "取得定位后开始指引"}
         if guide.status.contains("重算失败") {return "重新规划暂未完成，将保留当前路线"}
+        if guide.recoveringPosition {return "正在按恢复的定位核对路线，稍后继续指引"}
         if guide.status.contains("正在重新规划") {return "偏离路线，正在重新规划…"}
         if guide.status.contains("已偏离路线") {return "已偏离路线"}
         if guide.status.contains("GPS") {return "定位信号较弱"}
@@ -217,6 +219,7 @@ struct IndependentNavigationView: View {
         return guide.simulation ? "模拟导航":""
     }
     private var arrow:String {
+        if guide.position == nil || guide.recoveringPosition {return "location.circle"}
         if guide.route?.detailedGuidance == false {return "point.topleft.down.curvedto.point.bottomright.up"}
         switch guide.turnDirection {case "L":return "arrow.turn.up.left";case "R":return "arrow.turn.up.right";case "SL":return "arrow.up.left";case "SR":return "arrow.up.right";case "U":return "arrow.uturn.down";default:return "arrow.up"}
     }

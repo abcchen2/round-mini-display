@@ -22,10 +22,10 @@ final class Speech {static let shared=Speech();var messages:[String]=[];func sto
 final class RideRecorder {static let shared=RideRecorder();func start(_ text:String){};func finish(){}}
 final class LocationService {static let shared=LocationService();func setPrecise(_ on:Bool){}}
 final class MapFeeder {
-    static let shared=MapFeeder();var keys:[String]=[]
+    static let shared=MapFeeder();var keys:[String]=[];var locations:[MotorPoint]=[]
     func onNaviStart(){};func onNaviEnd(){}
     func prepareRoute(key:String,coords:[(lat:Double,lng:Double)]){keys.append(key)}
-    func onLocation(lat:Double,lng:Double,bearing:Double,kmh:Int){}
+    func onLocation(lat:Double,lng:Double,bearing:Double,kmh:Int){locations.append(MotorPoint(lat:lat,lng:lng))}
     func onRoute(key:String,coords:[(lat:Double,lng:Double)],lights:[(lat:Double,lng:Double)])->Bool{true}
 }
 final class WebRouteMetadata {

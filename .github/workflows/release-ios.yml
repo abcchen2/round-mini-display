@@ -71,6 +71,7 @@ jobs:
           python3 ios/tests/webmotor/check.py | tee parity-tests.log
           python3 ios/tests/screenoff-maps/run.py | tee screenoff-tests.log
           python3 ios/tests/reroute-recovery/run.py | tee reroute-tests.log
+          python3 ios/tests/ble-command-state/run.py | tee ble-command-state-tests.log
           swiftc ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift -o /tmp/arrival
           /tmp/arrival
           clang++ -std=c++17 ios/tests/phone-clock/receiver.cpp -o /tmp/clock-receiver
@@ -131,4 +132,5 @@ jobs:
             parity-tests.log
             screenoff-tests.log
             reroute-tests.log
+            ble-command-state-tests.log
           if-no-files-found: warn
