@@ -50,7 +50,7 @@ void mapInit() {
 // 解析刚收齐的地图块，建立索引
 void parseMap(const uint8_t *p, uint32_t len) {
   mapValid = false;
-  if (len < 12) return;
+  if (!featCls || !featNp || !featOff || !featBox || len < 12) return;
   int frame = rdu16(p);
   int32_t ox = rd32(p + 2), oy = rd32(p + 6);
   int n = rdu16(p + 10);

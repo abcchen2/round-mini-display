@@ -17,6 +17,9 @@ final class Weather: ObservableObject {
     private var messages: [String] = []
     private var images: [(Int, TextImage.Img?)] = []
     private let geocoder = CLGeocoder()
+    private static let hhmmFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HH:mm"; return f
+    }()
 
     var displaySummary:String {
         if info.contains("失败") || info.contains("HTTP") || info.contains("Error") || info.contains("无效") { return "天气暂未更新，请检查配置或稍后重试" }
@@ -115,7 +118,7 @@ final class Weather: ObservableObject {
         let confirmed = r[4]?["alerts"] is [[String: Any]] || dict(r[4]?["metadata"])["zeroResult"] as? Bool == true
         let title = top?["headline"] as? String ?? (confirmed ? "当前位置暂无有效预警" : "预警信息暂不可用")
         let body = top?["description"] as? String ?? "", advice = top?["instruction"] as? String ?? ""
-        let f = DateFormatter(); f.dateFormat = "HH:mm"
+        let f = Self.hhmmFormatter
         // Stable Java-compatible hash: the firmware uses it to distinguish warnings.
         var hash: Int32 = 0
         for c in title.utf16 { hash = hash &* 31 &+ Int32(c) }

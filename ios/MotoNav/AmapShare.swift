@@ -395,10 +395,13 @@ enum AmapShare {
         return bd
     }
 
-    /// 当前位置在原路线上（60 米以内）时返回走到的路程，否则 nil
-    static func progressNear(_ r: Route, _ lat: Double, _ lng: Double, near: Double = 60) -> Double? {
+    /// 当前位置在原路线上（60 米以内）时返回走到的路程，否则 nil；可限制在 [minD, maxD] 路程窗口内找，避免往返/环线跳到回程
+    static func progressNear(_ r: Route, _ lat: Double, _ lng: Double, near: Double = 60, minD: Double = 0, maxD: Double = .greatestFiniteMagnitude) -> Double? {
         var best = Double.greatestFiniteMagnitude, bd = 0.0
-        scan(r, lat, lng, skipFar: true) { d, at, _ in if d < best { best = d; bd = at } }
+        scan(r, lat, lng, skipFar: true) { d, at, i in
+            if r.cum[i + 1] < minD || r.cum[i] > maxD { return }
+            if d < best && at >= minD && at <= maxD { best = d; bd = at }
+        }
         return best <= near ? bd : nil
     }
 
@@ -544,7 +547,8 @@ final class ShareGuide {
     /// 每次定位
     func onLocation(_ la: Double, _ lo: Double) {
         lat = la; lng = lo
-        guard let r = route, let p = AmapShare.progressNear(r, la, lo) else { return }
+        guard let r = route,
+              let p = AmapShare.progressNear(r, la, lo, minD: max(0, maxProg - 100), maxD: maxProg + 3000) ?? AmapShare.progressNear(r, la, lo) else { return }
         if p > maxProg && p < maxProg + 3000 { maxProg = p }
     }
 

@@ -9,17 +9,18 @@ void handleBitmap(const uint8_t *d, int n) {
   if (slot >= IMG_SLOTS) return;
   TextImg &im = imgs[slot];
   if (w == 0 || h == 0 || parts == 0) {          // 空图：清掉这一栏
-    im.showW = 0; im.showH = 0; im.recvId = -1;
+    im.showW = 0; im.showH = 0; im.recvId = -1; im.recvMask = 0; im.recvParts = 0;
     navDirty = true;
     if (slot == 3 || slot == 4 || (slot >= 7 && slot <= 11)) wxDirty = true;
     if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;
     return;
   }
+  if (!im.recv || !im.show) return;
   if (slot == 12 && (!musicLyrics || !hidMusicMode || !appleMedia.available ||
       lyricImageGeneration != appleMedia.generation || lyricImageTitleRevision != appleMedia.values[0].revision || lyricImageArtistRevision != appleMedia.values[1].revision)) return;
   int total = ((w + 1) / 2) * h;
-  if (total > IMG_MAX || parts > 32) return;
-  if (id != im.recvId) {                          // 新的一张图：重新开始接收
+  if (total <= 0 || total > IMG_MAX || parts > 32 || part >= parts || off >= total) return;
+  if (id != im.recvId || w != im.recvW || h != im.recvH || parts != im.recvParts) { // 新的一张图：重新开始接收
     im.recvId = id; im.recvW = w; im.recvH = h; im.recvParts = parts; im.recvMask = 0;
   }
   int len = n - 10;

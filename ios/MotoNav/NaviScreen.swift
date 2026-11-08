@@ -192,11 +192,13 @@ struct NaviScreen: View {
         m >= 1000 ? String(format: "%.1f 公里", Double(m) / 1000) : "\(m) 米"
     }
 
+    private static let etaFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HH:mm"; return f
+    }()
+
     private static func etaText(_ remainS: Int) -> String {
         guard remainS > 0 else { return "—" }
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
-        return f.string(from: Date().addingTimeInterval(TimeInterval(remainS))) + " 到达"
+        return etaFormatter.string(from: Date().addingTimeInterval(TimeInterval(remainS))) + " 到达"
     }
 
     private static func remainText(_ m: Int, _ s: Int) -> String {

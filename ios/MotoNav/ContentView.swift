@@ -619,10 +619,13 @@ struct ContentView: View {
         return d >= 1000 ? String(format: "%.1f 公里", Double(d) / 1000) : "\(d) 米"
     }
 
+    private static let etaFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HH:mm"; return f
+    }()
+
     /// 剩余秒数 → 到达时间“18:52”
     static func etaText(_ remainS: Int) -> String {
-        let f = DateFormatter(); f.dateFormat = "HH:mm"
-        return f.string(from: Date().addingTimeInterval(TimeInterval(remainS)))
+        etaFormatter.string(from: Date().addingTimeInterval(TimeInterval(remainS)))
     }
 
     /// 点了搜索结果或最近去过：选目的地，或者（正在选途经点时）加一个途经点

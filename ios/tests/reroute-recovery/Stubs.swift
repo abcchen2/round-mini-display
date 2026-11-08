@@ -20,7 +20,8 @@ enum TextImage {
 }
 final class Speech {static let shared=Speech();var messages:[String]=[];func stopNow(){};func speak(_ text:String){messages.append(text)}}
 final class RideRecorder {static let shared=RideRecorder();func start(_ text:String){};func finish(){}}
-final class LocationService {static let shared=LocationService();func setPrecise(_ on:Bool){}}
+final class LocationService {static let shared=LocationService();var location:CLLocation?;func start(){};func setPrecise(_ on:Bool){}}
+final class Settings {static let shared=Settings();var keysMissing=false}
 final class MapFeeder {
     static let shared=MapFeeder();var keys:[String]=[];var locations:[MotorPoint]=[]
     func onNaviStart(){};func onNaviEnd(){}
@@ -38,9 +39,10 @@ final class WebRouteMetadata {
 enum MotorRoutes {
     enum Mode {case success,empty,failure,suspend}
     static var mode=Mode.success,calls=0,answer:MotorRoute?
+    static var requests:[MotorRequest]=[]
     static var waiting:[CheckedContinuation<[MotorRoute],Error>]=[]
     @MainActor static func load(_ request:MotorRequest) async throws -> [MotorRoute] {
-        calls+=1
+        calls+=1;requests.append(request)
         switch mode {
         case .success:return [answer!]
         case .empty:return []

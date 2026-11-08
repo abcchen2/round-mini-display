@@ -11,6 +11,9 @@ nav=(root/'MotoNav/NaviBridge.swift').read_text()
 start=nav.index('    static func distM('); end=nav.index('\n    }',start)+6
 core+='enum NaviBridge {\n'+nav[start:end]+'\n}\n'
 core+=(root/'MotoNav/RouteGeometry.swift').read_text()+'\n'
+core+=(root/'MotoNav/MotorGuidance.swift').read_text()+'\n'
+geo=(root/'MotoNav/MapGeo.swift').read_text()
+core+=geo[geo.index('enum MapGeo {'):geo.index('    // MARK: - 平面坐标（米）')]+'}\n'
 core+=(root/'MotoNav/MotorRouteTracker.swift').read_text()+'\n'
 core+=(root/'MotoNav/MotorReroutePolicy.swift').read_text()+'\n'
 bicycle=(root/'MotoNav/BicycleRoutes.swift').read_text()
@@ -37,10 +40,6 @@ let text = """
 """
 let route = try MotorRoutes.parse(Data(text.utf8),request:req)[0]
 precondition(route.points.count == 2 && route.steps[0].dir == "S")
-precondition(!MotorArrival.confirmed(remaining:800,offset:0,endpointDistance:5))
-precondition(!MotorArrival.confirmed(remaining:0,offset:100,endpointDistance:5))
-precondition(!MotorArrival.confirmed(remaining:0,offset:0,endpointDistance:800))
-precondition(MotorArrival.confirmed(remaining:0,offset:0,endpointDistance:0))
 expectFailure { _ = try MotorRoutes.parse(Data("{}".utf8),request:req) }
 expectFailure { _ = try MotorRoutes.parse(Data(text.replacingOccurrences(of:"104.001,30.001",with:"120,40").utf8),request:req) }
 print("PASS motor URL validation, parser, continuity and arrival regression")
@@ -58,6 +57,8 @@ tests+='\n'+(root/'tests/parity-016/main.swift').read_text()
 tests+='\n'+(root/'tests/bicycle-planning/main.swift').read_text()
 tests+='\n'+(root/'tests/webmotor/planning-regressions.swift').read_text()
 tests+='\n'+(root/'tests/webmotor/recovery-regressions.swift').read_text()
+tests+='\n'+(root/'tests/webmotor/arrival-regressions.swift').read_text()
+tests+='\n'+(root/'tests/webmotor/guidance-regressions.swift').read_text()
 folder=Path(tempfile.mkdtemp(prefix='motonav-core-'))
 (folder/'main.swift').write_text('import Foundation\n'+core+tests)
 subprocess.run(['swiftc',str(folder/'main.swift'),'-o',str(folder/'test')],check=True)

@@ -11,13 +11,15 @@ session = session.replace('private func replan(_ point:', 'func replan(_ point:'
 session = session.replace('private func render(', 'func render(').replace('private var cum:', 'var cum:')
 session = session.replace('private var tracker:', 'var tracker:')
 core = '\n'.join((root/'MotoNav'/name).read_text() for name in [
-    'RouteGeometry.swift', 'MotorRouteTracker.swift', 'MotorReroutePolicy.swift'])
+    'RouteGeometry.swift', 'MotorGuidance.swift', 'MotorRouteTracker.swift', 'MotorReroutePolicy.swift', 'MotorPlanHistory.swift'])
+planner=(root/'MotoNav/IndependentRouteView.swift').read_text()
+planner=planner[planner.index('enum IndependentMode'):planner.index('struct MotorLoginView')]
 # Preserve the old production matcher as the output-parity/performance control.
 old = (root/'tests/reroute-recovery/LegacyMotorRouteTracker.swift').read_text()
 stubs = (root/'tests/reroute-recovery/Stubs.swift').read_text()
 tests = (root/'tests/reroute-recovery/main.swift').read_text()
 folder = Path(tempfile.mkdtemp(prefix='motonav-reroute-'))
 source = folder/'main.swift'
-source.write_text('import Foundation\nimport CoreLocation\nimport Combine\n'+models+core+old+stubs+session+tests)
+source.write_text('import Foundation\nimport CoreLocation\nimport Combine\n'+models+core+old+stubs+session+planner+tests)
 subprocess.run(['swiftc', '-O', '-swift-version', '5', str(source), '-o', str(folder/'test')], check=True)
 subprocess.run([str(folder/'test')], check=True, timeout=90)

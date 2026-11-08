@@ -1720,17 +1720,18 @@ void handleBitmap(const uint8_t *d, int n) {
   if (slot >= IMG_SLOTS) return;
   TextImg &im = imgs[slot];
   if (w == 0 || h == 0 || parts == 0) {          // 空图：清掉这一栏
-    im.showW = 0; im.showH = 0; im.recvId = -1;
+    im.showW = 0; im.showH = 0; im.recvId = -1; im.recvMask = 0; im.recvParts = 0;
     navDirty = true;
-    if (slot == 3 || slot == 4) wxDirty = true;
+    if (slot == 3 || slot == 4 || (slot >= 7 && slot <= 11)) wxDirty = true;
     if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;
     return;
   }
+  if (!im.recv || !im.show) return;
   if (slot == 12 && (!musicLyrics || !hidMusicMode || !appleMedia.available ||
       lyricImageGeneration != appleMedia.generation || lyricImageTitleRevision != appleMedia.values[0].revision || lyricImageArtistRevision != appleMedia.values[1].revision)) return;
   int total = ((w + 1) / 2) * h;
-  if (total > IMG_MAX || parts > 32) return;
-  if (id != im.recvId) {                          // 新的一张图：重新开始接收
+  if (total <= 0 || total > IMG_MAX || parts > 32 || part >= parts || off >= total) return;
+  if (id != im.recvId || w != im.recvW || h != im.recvH || parts != im.recvParts) { // 新的一张图：重新开始接收
     im.recvId = id; im.recvW = w; im.recvH = h; im.recvParts = parts; im.recvMask = 0;
   }
   int len = n - 10;
@@ -1743,7 +1744,7 @@ void handleBitmap(const uint8_t *d, int n) {
     im.showW = im.recvW; im.showH = im.recvH;
     im.recvId = -1;
     navDirty = true;
-    if (slot == 3 || slot == 4) wxDirty = true;
+    if (slot == 3 || slot == 4 || (slot >= 7 && slot <= 11)) wxDirty = true;
     if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;                // 音乐文字图片收齐后刷新
   }
 }
@@ -3159,6 +3160,8 @@ unsigned long rerouteAt = 0, fasterAt = 0;
 int fasterMin = 0;
 bool gpsWeak = false;
 unsigned long routeSearchAt = 0;  // v3.0 上次全路线搜索的时间
+float routeJumpU = -1;            // 全线搜索找到、等待第二次确认的位置（-1 = 没有）
+unsigned long routeJumpAt = 0;
 
 // ---- 当前位置 ----
 bool mapOn = true;
@@ -3220,7 +3223,7 @@ void mapInit() {
 // 解析刚收齐的地图块，建立索引
 void parseMap(const uint8_t *p, uint32_t len) {
   mapValid = false;
-  if (len < 12) return;
+  if (!featCls || !featNp || !featOff || !featBox || len < 12) return;
   int frame = rdu16(p);
   int32_t ox = rd32(p + 2), oy = rd32(p + 6);
   int n = rdu16(p + 10);
@@ -3720,7 +3723,7 @@ void drawRasterMap(float cx, float cy, float sc, float cs, float sn) {
 
 void parseRoute(const uint8_t *p, uint32_t len) {
   routeN = 0;
-  if (len < 12) return;
+  if (!routeX || !routeY || !rbBox || len < 12) return;
   int frame = rdu16(p);
   int32_t x = rd32(p + 2), y = rd32(p + 6);
   int n = rdu16(p + 10);
@@ -3742,7 +3745,7 @@ void parseRoute(const uint8_t *p, uint32_t len) {
     rbBox[4 * b] = x0; rbBox[4 * b + 1] = y0; rbBox[4 * b + 2] = x1; rbBox[4 * b + 3] = y1;
   }
   routeN = n; routeFrame = frame;
-  routeProg = -1; routeSearchAt = 0;                  // v3.0 新路线：重新找车的位置
+  routeProg = -1; routeSearchAt = 0; routeJumpU = -1; // v3.0 新路线：重新找车的位置
   if (routeCum) {                                     // v5.0 路程表（路况颜色用）
     routeCum[0] = 0;
     for (int i = 1; i < n; i++) {
@@ -3772,7 +3775,7 @@ void parseRoute(const uint8_t *p, uint32_t len) {
   // v3.2 路线点后面可选：红绿灯个数(2) + 每个灯 x(4) y(4) 所在段号(2) 段内比例(1，0~255)
   lightN = 0;
   uint32_t pos = 12 + (uint32_t)(n - 1) * 4;
-  if (pos + 2 <= len) {
+  if (lightX && lightY && lightU && pos + 2 <= len) {
     int ln = rdu16(p + pos); pos += 2;
     for (int i = 0; i < ln && lightN < LIGHT_MAX && pos + 11 <= len; i++, pos += 11) {
       lightX[lightN] = rd32(p + pos); lightY[lightN] = rd32(p + pos + 4);
@@ -3798,31 +3801,63 @@ void routePt(float u, float &x, float &y) {
 }
 
 // 找车在路线上的位置：平时只在当前位置附近（往回 30 米、往前 300 米）找，
-// 这样掉头、绕回同一条路时不会跳到路线后面去；还没对上时才搜整条路线（最多每秒一次）
+// 这样掉头、绕回同一条路时不会跳到路线后面去；还没对上或局部窗口偏离超过 50 米时每秒搜一次整条路线。
+// 已对上后的全线搜索结果要连续两次一致才采用，避免偏航时一次就跳到 8 字形 / 往返路线的另一段。
+// 两个路线位置（段号 + 段内比例）之间的距离：有路程表按沿路线米数算，否则按直线距离
+float routeGap(float a, float b) {
+  if (routeCum) {
+    auto along = [](float u) {
+      int k = constrain((int)u, 0, routeN - 2);
+      return routeCum[k] + (u - k) * (routeCum[k + 1] - routeCum[k]);
+    };
+    return fabsf(along(a) - along(b));
+  }
+  float ax, ay, bx, by;
+  routePt(a, ax, ay); routePt(b, bx, by);
+  return sqrtf((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+}
+
 void updateRouteProgress(float cx, float cy) {
   if (routeN < 2) return;
-  int k0, k1;
+  auto searchRange = [&](int a, int b, float &best, float &bestU) {
+    best = 1e18f; bestU = -1;
+    for (int k = a; k <= b; k++) {
+      float ax = routeX[k], ay = routeY[k];
+      float vx = routeX[k + 1] - ax, vy = routeY[k + 1] - ay;
+      float L2 = vx * vx + vy * vy;
+      float t = L2 > 0 ? ((cx - ax) * vx + (cy - ay) * vy) / L2 : 0;
+      t = constrain(t, 0.0f, 1.0f);
+      float ex = ax + vx * t - cx, ey = ay + vy * t - cy;
+      float d2 = ex * ex + ey * ey;
+      if (d2 < best) { best = d2; bestU = k + t; }
+    }
+  };
+  float best = 1e18f, bestU = -1;
   if (routeProg < 0) {
     if (millis() - routeSearchAt < 1000 && routeSearchAt) return;
     routeSearchAt = millis();
-    k0 = 0; k1 = routeN - 2;
+    searchRange(0, routeN - 2, best, bestU);
   } else {
     int base = min((int)routeProg, routeN - 2);
     float acc = 0;
-    k0 = base; while (k0 > 0 && acc < 30) { acc += segLen(k0 - 1); k0--; }
+    int k0 = base; while (k0 > 0 && acc < 30) { acc += segLen(k0 - 1); k0--; }
     acc = 0;
-    k1 = base; while (k1 < routeN - 2 && acc < 300) { acc += segLen(k1); k1++; }
-  }
-  float best = 1e18f, bestU = -1;
-  for (int k = k0; k <= k1; k++) {
-    float ax = routeX[k], ay = routeY[k];
-    float vx = routeX[k + 1] - ax, vy = routeY[k + 1] - ay;
-    float L2 = vx * vx + vy * vy;
-    float t = L2 > 0 ? ((cx - ax) * vx + (cy - ay) * vy) / L2 : 0;
-    t = constrain(t, 0.0f, 1.0f);
-    float ex = ax + vx * t - cx, ey = ay + vy * t - cy;
-    float d2 = ex * ex + ey * ey;
-    if (d2 < best) { best = d2; bestU = k + t; }
+    int k1 = base; while (k1 < routeN - 2 && acc < 300) { acc += segLen(k1); k1++; }
+    searchRange(k0, k1, best, bestU);
+    if (best <= 50.0f * 50.0f) routeJumpU = -1;
+    else if (millis() - routeSearchAt >= 1000 || !routeSearchAt) {
+      routeSearchAt = millis();
+      float gBest, gU;
+      searchRange(0, routeN - 2, gBest, gU);
+      if (gBest <= 50.0f * 50.0f) {
+        // 间隔不超过 3.5 秒、沿路线相距不超过 150 米才算同一个位置（100 km/h 约 3 秒走 85 米）
+        if (routeJumpU >= 0 && millis() - routeJumpAt <= 3500 && routeGap(gU, routeJumpU) <= 150.0f) {
+          best = gBest; bestU = gU; routeJumpU = -1;
+        } else {
+          routeJumpU = gU; routeJumpAt = millis();
+        }
+      }
+    }
   }
   if (best > 50.0f * 50.0f) return;                   // 离路线超过 50 米（偏航中）：先不动
   routeProg = bestU;
@@ -8820,6 +8855,9 @@ void resetNavState() {
   if (idlePowerOffNavigationActive(true, inNav, cruiseOn, navDir == "A"))
     idlePowerOffReset(&idlePowerOffTimer, millis());
   inNav = false;
+  navDir = ""; navDist = 0; navAngle = NAN;
+  routeN = 0; routeProg = -1; routeSearchAt = 0; routeJumpU = -1; lightN = 0;
+  corrX = 0; corrY = 0; corrAt = 0; hdgRate = 0; viewInit = false;
   tripOn = false; lightDist = -1;                       // v3.1
   mapCamN = 0;                                          // v3.5
   ghostN = 0;                                           // v4.4
@@ -8829,7 +8867,7 @@ void resetNavState() {
   hasCam = false;
   laneN = 0;
   ringActive = false; ringDir = "";
-  for (int i = 0; i < 3; i++) { imgs[i].showW = 0; imgs[i].showH = 0; imgs[i].recvId = -1; }   // v5.3 天气栏 3、4 留着
+  for (int i = 0; i < 3; i++) { imgs[i].showW = 0; imgs[i].showH = 0; imgs[i].recvId = -1; imgs[i].recvMask = 0; imgs[i].recvParts = 0; }   // v5.3 天气栏 3、4 留着
 }
 
 int hexVal(char c) {

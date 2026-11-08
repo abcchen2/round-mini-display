@@ -6,6 +6,8 @@ import ObjectiveC
 struct MotorPoint: Codable, Sendable { let lat: Double; let lng: Double; var name = ""; var id = "" }
 struct MotorRequest: Codable, Sendable {
     var start: MotorPoint; let end: MotorPoint; var vias: [MotorPoint] = []; var bicycle = false
+    var startFromCurrentLocation: Bool? = nil
+    var usesCurrentLocation: Bool {startFromCurrentLocation ?? (start.name=="我的位置" && start.id.isEmpty)}
     var page: URL {
         var c = URLComponents(string: "https://www.amap.com/ssr/dir")!
         c.queryItems = [URLQueryItem(name: "type", value: "4"), .init(name: "fname", value: start.name), .init(name: "flat", value: "\(start.lat)"), .init(name: "flon", value: "\(start.lng)"), .init(name: "dname", value: end.name), .init(name: "dlat", value: "\(end.lat)"), .init(name: "dlon", value: "\(end.lng)"), .init(name: "did", value: end.id)]
@@ -36,13 +38,13 @@ struct MotorRequest: Codable, Sendable {
             }
             guard q["via[16][lnglat]"] == nil, q["vid"] == nil || !vias.isEmpty else { throw AmapShare.Fail("途经点缺少坐标或数量过多") }
         }
-        return try MotorRequest(start: point("f", "from"), end: point("d", "to"), vias: vias)
+        return try MotorRequest(start: point("f", "from"), end: point("d", "to"), vias: vias,startFromCurrentLocation:false)
     }
     static func valid(_ lat: Double, _ lng: Double) -> Bool { lat.isFinite && lng.isFinite && abs(lat) <= 90 && abs(lng) <= 180 }
 }
 struct MotorStep: Sendable { let instruction: String; let road: String; let action: String; let end: Int
     var start = 0; var distance = 0; var duration = 0
-    var dir: String { action.contains("掉头") ? "U" : action.contains("左前") || action.contains("靠左") ? "SL" : action.contains("右前") || action.contains("靠右") ? "SR" : action.contains("左") ? "L" : action.contains("右") ? "R" : "S" }
+    var dir: String { action.contains("掉头") || action.contains("调头") ? "U" : action.contains("左前") || action.contains("靠左") ? "SL" : action.contains("右前") || action.contains("靠右") ? "SR" : action.contains("左") ? "L" : action.contains("右") ? "R" : "S" }
 }
 struct MotorRoute: Identifiable, Sendable {
     let id = UUID(); let request: MotorRequest; let points: [MotorPoint]; let steps: [MotorStep]; let seconds: Int
@@ -67,10 +69,13 @@ struct MotorRoute: Identifiable, Sendable {
         return roads
     }
     var coords: [(lat: Double,lng: Double)] { coordinates }
-}
-enum MotorArrival {
-    static func confirmed(remaining: Int, offset: Double, endpointDistance: Double) -> Bool {
-        remaining <= 15 && offset <= 35 && endpointDistance <= 35
+    func at(_ distance: Double) -> MotorPoint {
+        guard points.count>=2 else {return points.first ?? MotorPoint(lat:0,lng:0)}
+        var lo=1,hi=points.count-1
+        while lo<hi {let mid=(lo+hi)/2;if cumulative[mid]<distance {lo=mid+1}else{hi=mid}}
+        let f=min(1,max(0,(distance-cumulative[lo-1])/max(0.001,cumulative[lo]-cumulative[lo-1])))
+        let a=points[lo-1],b=points[lo]
+        return MotorPoint(lat:a.lat+(b.lat-a.lat)*f,lng:a.lng+(b.lng-a.lng)*f)
     }
 }
 /// Per-route events advance only toward nearer gates, even while GPS distance jitters.
@@ -82,6 +87,15 @@ struct MotorAnnouncementGate {
         closest[event] = gate
         return gate
     }
+    private var tiers: [Int: Int] = [:]
+    /// 档位距离会随车速变化，所以按档位序号（由远到近 0,1,2…）去重：同一档不会因为阈值变了再念一次。
+    /// thresholds 必须由远到近严格递减；返回命中的档位序号。
+    mutating func takeTier(event: Int, distance: Int, thresholds: [Int]) -> Int? {
+        guard distance >= 0, let tier = thresholds.indices.last(where: { distance <= thresholds[$0] }),
+              tier > (tiers[event] ?? -1) else { return nil }
+        tiers[event] = tier
+        return tier
+    }
 }
 
 enum MotorRoutes {
@@ -91,7 +105,7 @@ enum MotorRoutes {
     }
     static func fromShare(_ r: AmapShare.Route) -> MotorRoute {
         let points = r.pts.map { MotorPoint(lat: $0.lat,lng: $0.lng) }
-        let request = MotorRequest(start: MotorPoint(lat:r.startLat,lng:r.startLng,name:r.startName),end:MotorPoint(lat:r.endLat,lng:r.endLng,name:r.endName),bicycle:r.kind == "自行车")
+        let request = MotorRequest(start: MotorPoint(lat:r.startLat,lng:r.startLng,name:r.startName),end:MotorPoint(lat:r.endLat,lng:r.endLng,name:r.endName),bicycle:r.kind == "自行车",startFromCurrentLocation:false)
         var cursor = 0
         let steps: [MotorStep] = r.roads.map { road in
             let start = cursor
@@ -173,17 +187,21 @@ enum MotorRoutes {
             throw AmapShare.Fail("高德返回的摩托车路线格式异常，请稍后重试")
         }
         guard !paths.isEmpty else { throw AmapShare.Fail("高德未找到可用摩托车路线，请调整起终点后重试") }
-        return try paths.map { path in
+        func parsePath(_ path: [String:Any]) throws -> MotorRoute {
             try Task.checkCancellation()
             guard let steps = path["steps"] as? [[String: Any]], !steps.isEmpty, steps.count <= 10000 else { throw AmapShare.Fail("路线缺少分段") }
             var points: [MotorPoint] = [], instructions: [MotorStep] = []
             for step in steps {
                 let start=max(0,points.count-1)
                 guard let poly = step["polyline"] as? String, !poly.isEmpty else { throw AmapShare.Fail("路线缺少坐标") }
-                for pair in poly.split(separator: ";") {
+                for (pointIndex,pair) in poly.split(separator: ";").enumerated() {
                     if (points.count & 255) == 0 {try Task.checkCancellation()}
                     let xy = pair.split(separator: ","); guard xy.count == 2, let lo = Double(xy[0]), let la = Double(xy[1]), MotorRequest.valid(la,lo) else { throw AmapShare.Fail("无效路线坐标") }
-                    if let p = points.last { if p.lat == la && p.lng == lo { continue }; guard NaviBridge.distM(p.lat,p.lng,la,lo) < 5000 else { throw AmapShare.Fail("路线不连续") } }
+                    if let p = points.last {
+                        if p.lat == la && p.lng == lo { continue }
+                        let gap=NaviBridge.distM(p.lat,p.lng,la,lo)
+                        guard gap < 5000,pointIndex != 0 || gap<=50 else {throw AmapShare.Fail("路线分段缺少连接，请重新规划")}
+                    }
                     guard points.count < 150000 else { throw AmapShare.Fail("路线过长") }; points.append(MotorPoint(lat: la,lng: lo))
                 }
                 instructions.append(MotorStep(instruction: step["instruction"] as? String ?? "", road: step["road_name"] as? String ?? "", action: (step["navi"] as? [String: Any])?["action"] as? String ?? "", end: max(0,points.count-1),start:start,distance:(step["step_distance"] as? NSNumber)?.intValue ?? 0,duration:((step["cost"] as? [String:Any])?["duration"] as? NSNumber)?.intValue ?? 0))
@@ -193,6 +211,13 @@ enum MotorRoutes {
             guard total>=3,total<=5_000_000 else{throw AmapShare.Fail("路线长度无效")}
             return MotorRoute(request: request, points: points, steps: instructions, seconds: ((path["cost"] as? [String: Any])?["duration"] as? NSNumber)?.intValue ?? 0)
         }
+        var parsed: [MotorRoute]=[],failure: Error=AmapShare.Fail("高德未返回可用摩托车路线")
+        for path in paths {
+            do {parsed.append(try parsePath(path))}
+            catch {try Task.checkCancellation();failure=error}
+        }
+        guard !parsed.isEmpty else {throw failure}
+        return parsed
     }
 }
 
@@ -214,16 +239,24 @@ final class WebMotorSession: ObservableObject {
     private var turnAnnouncements = MotorAnnouncementGate()
     private var lampAnnouncements = MotorAnnouncementGate()
     private static let lampGates = [300, 60]
-    /// 转向播报档位（由近到远试）。原来按 distance/100 去重，500→498 时会 2 米内连播两句。
-    private static let turnGates = [500, 200]
+    /// 剩余时间的快慢修正：实际用时 / 高德计划用时（平滑后），只作用于未来 10 分钟以内的路程
+    private var paceRatio = 1.0, paceAnchor: (time: Double, planned: Int)?
+    /// 每笔定位都会算一次到达时间；DateFormatter 创建很贵，复用一个（只在主线程使用）。
+    private static let etaFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HHmm"; return f
+    }()
     private var stepIndex = 0, rerouting = false
+    private var stepProgress=MotorStepProgress()
     private var reroutePolicy=MotorReroutePolicy(), rerouteTask: Task<Void,Never>?
     private var routeTolerance=25.0, statusUntil=0.0, replanStartedAt=0.0
     private var roadSent = "", footerSent = ""
+    private var speedSent = "", weakSent = "", waitSent = "", turnSent = "", etaSent = ""
     private var startedAt = Date(), tripMeters = 0.0, tripMax = 0, previousFix: CLLocation?
     private var viaProgress: [Double] = [], nextVia = 0, lastFix: Date?
     private var tracker: MotorRouteTracker?
     private var confirmedArrival=false
+    @Published private(set) var arrivalCandidate=false
+    @Published private(set) var replanCount=0
     private var metadataSuspended=false
     private var simulationTick: TimeInterval?
     private var realHeading: Double?
@@ -237,13 +270,15 @@ final class WebMotorSession: ObservableObject {
               (route.cum.last ?? 0)>=3,(route.cum.last ?? 0)<=5_000_000,
               route.steps.allSatisfy({route.points.indices.contains($0.end)}) else { return }
         stop(); NaviBridge.shared.stop(); NaviBridge.shared.stopCruise()
-        self.route = route; cum = route.cum; progress = 0; stepIndex = 0; simulation = simulate; paused = false; arrived = false; running = true
+        self.route = route; cum = route.cum; progress = 0; stepIndex = 0;stepProgress=MotorStepProgress();simulation = simulate; paused = false; arrived = false; running = true
+        arrivalCandidate=false;replanCount=0
         tracker=MotorRouteTracker(route.points);confirmedArrival=false;metadataSuspended=false;simulationTick=nil;realHeading=nil;recoveringPosition=false
         position=nil;remaining=route.totalMeters;remainingSeconds=max(0,route.seconds)
         instruction="等待定位";turnMetres=0;turnDirection=""
         speed = simulate ? (NavigationSpeed.values.contains(simulationSpeed) ? simulationSpeed : 60) : 0
         reroutePolicy.reset();routeTolerance=25;statusUntil=0; nextVia = 0; lastFix = nil; viaProgress = route.request.vias.map { v in nearestAlong(v) }
-        roadSent = ""; footerSent = ""; startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil
+        roadSent = ""; footerSent = ""; speedSent = ""; weakSent = ""; waitSent = ""; turnSent = ""; etaSent = ""
+        startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil; paceRatio = 1; paceAnchor = nil
         turnAnnouncements = MotorAnnouncementGate(); lampAnnouncements = MotorAnnouncementGate()
         status = simulate ? "模拟导航" : "等待定位"; token = UUID()
         UIApplication.shared.isIdleTimerDisabled = true
@@ -260,7 +295,7 @@ final class WebMotorSession: ObservableObject {
             if self.lastFix == nil || Date().timeIntervalSince(self.lastFix!)>3 {
                 if let current=self.route {WebRouteMetadata.shared.push(route:current,progress:self.progress,fresh:false,speed:0)}
                 if Date().timeIntervalSince(self.lastFix ?? self.startedAt)>10 {
-                    if ProcessInfo.processInfo.systemUptime>=self.statusUntil {self.status="GPS 信号弱，等待新定位"};BleLink.shared.send("#x,1")
+                    if ProcessInfo.processInfo.systemUptime>=self.statusUntil {self.status="GPS 信号弱，等待新定位"};self.weakSent="#x,1";BleLink.shared.send("#x,1")
                 }
             }
         }
@@ -274,11 +309,12 @@ final class WebMotorSession: ObservableObject {
                 if self.paused{return}
                 self.progress = min(self.cum.last ?? 0, self.progress + Double(self.speed)/3.6*dt)
                 let p=self.at(self.progress)
-                if let match=self.tracker?.update(p,accuracy:3,now:ProcessInfo.processInfo.systemUptime) {self.confirmedArrival=match.arrived}
+                if let match=self.tracker?.update(p,accuracy:3,now:ProcessInfo.processInfo.systemUptime) {self.confirmedArrival=match.arrived;self.arrivalCandidate=match.arrivalCandidate}
                 self.render(p, off: 0)
             }
         } else { RideRecorder.shared.start("网页路线导航"); LocationService.shared.setPrecise(true) }
         if simulate {render(route.points[0], off: 0)} else {
+            speedSent="#v,0";weakSent="#x,1";waitSent="#NW,1"
             BleLink.shared.send("#v,0");BleLink.shared.send("#x,1");BleLink.shared.send("#NW,1")
         }
     }
@@ -287,34 +323,37 @@ final class WebMotorSession: ObservableObject {
         rerouteTask?.cancel();rerouteTask=nil;reroutePolicy.reset()
         if rerouting {BleLink.shared.send("#y,0")}
         watchdog?.invalidate();watchdog=nil;WebRouteMetadata.shared.stop()
-        if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")}; LocationService.shared.setPrecise(false) }
+        let wasRunning = running
+        if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")} }
+        speedSent="";weakSent="";waitSent="";turnSent="";etaSent=""
         running = false; rerouting = false; UIApplication.shared.isIdleTimerDisabled = false
+        // setPrecise 会检查各导航是否仍在运行，必须在 running=false 之后调用，否则精度永远降不下来
+        if wasRunning { LocationService.shared.setPrecise(false) }
     }
     private func at(_ distance: Double) -> MotorPoint {
-        guard let route = route else { return MotorPoint(lat: 0,lng: 0) }
-        var lo = 1, hi = cum.count-1
-        while lo < hi { let mid = (lo+hi)/2; if cum[mid] < distance { lo = mid+1 } else { hi = mid } }
-        let ratio = min(1,max(0,(distance-cum[lo-1])/max(0.001,cum[lo]-cum[lo-1])))
-        let a = route.points[lo-1], b = route.points[lo]
-        return MotorPoint(lat: a.lat+(b.lat-a.lat)*ratio,lng: a.lng+(b.lng-a.lng)*ratio)
+        route?.at(distance) ?? MotorPoint(lat:0,lng:0)
     }
     func onFix(_ l: CLLocation) {
         guard running, !simulation, l.horizontalAccuracy >= 0, l.horizontalAccuracy <= 60, abs(l.timestamp.timeIntervalSinceNow) < 15,
               lastFix == nil || l.timestamp > lastFix! else { return }
         let g = MapGeo.wgsToGcj(l.coordinate.latitude,l.coordinate.longitude),point=MotorPoint(lat:g.lat,lng:g.lng)
-        guard let match=tracker?.update(point,accuracy:l.horizontalAccuracy,now:ProcessInfo.processInfo.systemUptime) else{return}
-        lastFix = l.timestamp;confirmedArrival=match.arrived
+        let course=Self.reliableCourse(l)
+        guard let match=tracker?.update(point,accuracy:l.horizontalAccuracy,now:ProcessInfo.processInfo.systemUptime,heading:course) else{return}
+        let wasArrivalCandidate=arrivalCandidate
+        lastFix = l.timestamp;confirmedArrival=match.arrived;arrivalCandidate=match.arrivalCandidate
+        if arrivalCandidate,!wasArrivalCandidate {Speech.shared.stopNow();waitSent="#NW,1";turnSent="";BleLink.shared.send("#NW,1")}
         if let previous = previousFix { let d = l.distance(from: previous); if d < 300 { tripMeters += d } }
         let measuredSpeed=l.speed.isFinite ? min(250,max(0,l.speed*3.6)) : 0
         previousFix = l; tripMax = max(tripMax,Int(measuredSpeed))
         speed = Int(measuredSpeed)
         if l.course>=0,l.speed>0.3 {realHeading=l.course}
         if match.needsReplan {
-            if !recoveringPosition {Speech.shared.stopNow();BleLink.shared.send("#NW,1")}
+            if !recoveringPosition {Speech.shared.stopNow();waitSent="#NW,1";turnSent="";BleLink.shared.send("#NW,1")}
             recoveringPosition=true;confirmedArrival=false
             position=point;turnMetres=0;turnDirection="";instruction="定位已恢复，正在核对路线"
             if !rerouting,ProcessInfo.processInfo.systemUptime>=statusUntil {status="定位已恢复，正在核对路线"}
             MapFeeder.shared.onLocation(lat:point.lat,lng:point.lng,bearing:realHeading ?? 0,kmh:speed)
+            speedSent="#v,\(speed)";weakSent="#x,1"
             BleLink.shared.send("#v,\(speed)");BleLink.shared.send("#x,1")
             replan(point)
             return
@@ -322,22 +361,39 @@ final class WebMotorSession: ObservableObject {
         let now=ProcessInfo.processInfo.systemUptime
         routeTolerance=MotorReroutePolicy.threshold(accuracy:l.horizontalAccuracy)
         if match.offset <= routeTolerance { progress = max(progress,match.progress) }
-        let shouldReplan=reroutePolicy.observe(offset:match.offset,accuracy:l.horizontalAccuracy,now:now)
+        // 航向与路线走向的夹角：逆向行驶时偏移几乎为 0，小角度分叉时偏移涨得很慢，单靠距离要很久才会重算。
+        let headingDelta=course.flatMap{c in tracker?.bearing(at:match.progress).map{RouteShape.angle(c,$0)}}
+        let shouldReplan: Bool
+        if arrivalCandidate {shouldReplan=false;rerouteTask?.cancel();rerouteTask=nil;reroutePolicy.reset();if rerouting {rerouting=false;BleLink.shared.send("#y,0")}}
+        else {shouldReplan=reroutePolicy.observe(offset:match.offset,accuracy:l.horizontalAccuracy,now:now,headingDelta:headingDelta)}
         if !rerouting {
             if now>=statusUntil {status=match.offset>routeTolerance ? "已偏离路线 · 距路线 \(Int(match.offset)) 米" : "\(route?.request.bicycle == true ? "自行车" : "摩托车")导航 · 定位精度 \(Int(l.horizontalAccuracy)) 米"}
             if match.offset<=routeTolerance,metadataSuspended,let r=route {metadataSuspended=false;WebRouteMetadata.shared.load(r)}
         }
         while nextVia < viaProgress.count && progress > viaProgress[nextVia]+40 { nextVia += 1 }
+        if let route=route,!arrivalCandidate,match.offset<=routeTolerance,!rerouting {
+            stepIndex=stepProgress.update(route:route,progress:progress,point:point,accuracy:l.horizontalAccuracy,heading:course,now:now,simulation:false)
+        }
         render(point,off: match.offset)
-        if shouldReplan, !rerouting { replan(point) }
+        if running,shouldReplan, !rerouting { replan(point) }
+    }
+    /// GPS course is trusted only while moving (≥ 14 km/h); at lights and in slow traffic it swings freely.
+    static func reliableCourse(_ l: CLLocation) -> Double? {
+        if #available(iOS 13.4, macOS 10.15.4, *) {
+            return MotorGuidance.reliableHeading(speed:l.speed,course:l.course,courseAccuracy:l.courseAccuracy,accuracy:l.horizontalAccuracy)
+        }
+        return nil
     }
     private func replan(_ point: MotorPoint) {
-        guard running,!simulation,let route=route,let requestID=reroutePolicy.begin(now:ProcessInfo.processInfo.systemUptime) else {return}
+        guard running,!simulation,!arrivalCandidate,let route=route,let requestID=reroutePolicy.begin(now:ProcessInfo.processInfo.systemUptime) else {return}
         replanStartedAt=ProcessInfo.processInfo.systemUptime
         rerouting=true;status="偏航，正在重新规划\(route.request.bicycle ? "自行车" : "摩托车")路线…"
+        // 之前偏航重算全程无声，只能看圆屏上的小标记；骑行时很难察觉，像是“偏了很久才重算”。
+        if !recoveringPosition { Speech.shared.speak("已偏离路线，正在重新规划") }
         let generation=token
         WebRouteMetadata.shared.stop();metadataSuspended=true;BleLink.shared.send("#y,1")
         var request=route.request;request.start=point;request.vias=Array(request.vias.dropFirst(nextVia))
+        let departureHeading=realHeadingForSelection()
         MapPipelineTrace.event("web-reroute-start",["points":route.points.count,"vias":request.vias.count])
         rerouteTask=Task { @MainActor [weak self] in
             guard let self=self,self.running,self.token==generation,self.reroutePolicy.pending==requestID,!Task.isCancelled else {return}
@@ -351,16 +407,19 @@ final class WebMotorSession: ObservableObject {
                 try Task.checkCancellation()
                 guard self.running,self.token==generation,self.reroutePolicy.pending==requestID else {return}
                 if self.reroutePolicy.expired(now:ProcessInfo.processInfo.systemUptime) != nil {throw AmapShare.Fail("重算请求超时")}
-                guard let new=routes.first else {throw AmapShare.Fail("未返回可用路线")}
-                self.route=new;self.cum=new.cum;self.progress=0;self.stepIndex=0;self.nextVia=0
+                guard let new=MotorRouteSelection.preferred(routes,from:point,heading:departureHeading) else {throw AmapShare.Fail("未返回可用路线")}
+                MapPipelineTrace.event("web-route-replaced",["previous":route.id.uuidString,"next":new.id.uuidString,"option":routes.firstIndex(where:{$0.id==new.id}) ?? 0,"candidates":routes.count])
+                self.route=new;self.cum=new.cum;self.progress=0;self.stepIndex=0;self.stepProgress=MotorStepProgress();self.nextVia=0;self.arrivalCandidate=false;self.replanCount+=1
                 self.tracker=MotorRouteTracker(new.points);self.confirmedArrival=false;self.lastFix=nil;self.previousFix=nil;self.metadataSuspended=false;self.recoveringPosition=false
                 self.position=nil;self.turnMetres=0;self.turnDirection="";self.instruction="等待定位"
+                self.waitSent="#NW,1";self.turnSent="";self.etaSent="";self.paceAnchor=nil   // 快慢比值保留：骑行习惯不随换线改变
                 BleLink.shared.send("#NW,1")
                 self.roadSent="";self.footerSent=""
                 self.turnAnnouncements = MotorAnnouncementGate(); self.lampAnnouncements = MotorAnnouncementGate()
                 self.viaProgress=new.request.vias.map{v in self.nearestAlong(v)}
                 MapFeeder.shared.prepareRoute(key:new.id.uuidString,coords:new.coords)
                 WebRouteMetadata.shared.load(new);succeeded=true
+                Speech.shared.speak("路线已重新规划")
             } catch {failureMessage=error.localizedDescription}
         }
     }
@@ -372,59 +431,87 @@ final class WebMotorSession: ObservableObject {
         status=success ? "路线已重新规划" : "重算失败，保留原路线：\(error)"
         statusUntil=now+5
     }
+    private func realHeadingForSelection() -> Double? {
+        guard let fix=previousFix,abs(fix.timestamp.timeIntervalSinceNow)<3 else {return nil}
+        return Self.reliableCourse(fix)
+    }
     private func nearestAlong(_ p: MotorPoint) -> Double {
         guard let route = route else { return 0 }
         let index = route.points.indices.min { NaviBridge.distM(p.lat,p.lng,route.points[$0].lat,route.points[$0].lng) < NaviBridge.distM(p.lat,p.lng,route.points[$1].lat,route.points[$1].lng) } ?? 0
         return cum[index]
     }
+    /// 高德计划剩余时间 → 按骑行实际快慢修正后的剩余时间。
+    /// 在路线上每骑满 60 秒（且计划时间至少消耗 30 秒，或已过 3 分钟，比如堵车）取一次“实际/计划”比值并平滑；
+    /// 偏航、重算、确认到达期间不取样。修正量只按未来最多 10 分钟的路程计算，长途不会被一时快慢带偏。
+    private func paced(_ planned: Int, sampling: Bool) -> Int {
+        guard sampling else { paceAnchor = nil; return max(0, planned + Int(((paceRatio - 1) * Double(min(planned, 600))).rounded())) }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let a = paceAnchor {
+            let used = Double(a.planned - planned), elapsed = now - a.time
+            if used < -60 { paceAnchor = (now, planned) }                       // 计划时间反而变多：换段/数据变化，重新起算
+            else if elapsed >= 60 && (used >= 30 || elapsed >= 180) {
+                let sample = min(3, max(0.5, elapsed / max(10, used)))
+                paceRatio = min(2, max(0.6, paceRatio * 0.7 + sample * 0.3))
+                paceAnchor = (now, planned)
+            }
+        } else { paceAnchor = (now, planned) }
+        return max(0, planned + Int(((paceRatio - 1) * Double(min(planned, 600))).rounded()))
+    }
     private func render(_ p: MotorPoint, off: Double) {
         guard running, let route = route else { return }
         position = p
-        while stepIndex < route.steps.count-1 && progress+2 >= cum[route.steps[stepIndex].end] { stepIndex += 1 }
+        if simulation {stepIndex=stepProgress.update(route:route,progress:progress,point:p,accuracy:3,heading:nil,now:ProcessInfo.processInfo.systemUptime,simulation:true)}
         let step = route.steps[stepIndex]
         let fraction=min(1,max(0,(cum[step.end]-progress)/max(0.001,cum[step.end]-cum[min(step.start,step.end)])))
-        let distance=step.distance>0 ? Int((Double(step.distance)*fraction).rounded()) : max(0,Int(cum[step.end]-progress))
-        remaining=route.steps.contains(where:{$0.distance>0}) ? distance+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.distance)} : max(0,Int((cum.last ?? 0)-progress))
-        turnMetres=route.detailedGuidance ? distance:remaining;turnDirection=route.detailedGuidance ? step.dir:""
+        let distance=MotorGuidance.remaining(to:step,route:route,progress:progress)
+        remaining=max(0,Int(((cum.last ?? 0)-progress).rounded()))
+        turnMetres=route.detailedGuidance ? distance:remaining;turnDirection=route.detailedGuidance && !arrivalCandidate ? step.dir:""
         if simulation { tripMeters = progress; tripMax = max(tripMax,speed) }
-        instruction = step.instruction.isEmpty ? step.road : step.instruction
+        instruction = arrivalCandidate ? "已接近目的地，正在确认到达" : route.detailedGuidance ? MotorGuidance.instruction(step) : (step.instruction.isEmpty ? step.road:step.instruction)
         let ahead = at(min(cum.last ?? 0,progress+20))
         let geometryHeading = atan2((ahead.lng-p.lng)*cos(p.lat * .pi/180),ahead.lat-p.lat)*180 / .pi
         let heading = simulation ? geometryHeading : (realHeading ?? geometryHeading)
         MapFeeder.shared.onLocation(lat: p.lat,lng: p.lng,bearing: heading,kmh: speed)
         _ = MapFeeder.shared.onRoute(key: route.id.uuidString,coords: route.coords,lights: WebRouteMetadata.shared.lampCoords())
-        BleLink.shared.send("#v,\(speed)")
-        BleLink.shared.send("#x,0")
+        let speedCmd="#v,\(speed)"
+        if speedCmd != speedSent { speedSent = speedCmd; BleLink.shared.send(speedCmd) }
+        if weakSent != "#x,0" { weakSent = "#x,0"; BleLink.shared.send("#x,0") }
         WebRouteMetadata.shared.push(route:route,progress:progress,fresh:off<=routeTolerance && !rerouting,speed:speed)
-        if off <= routeTolerance && !rerouting {
-            if route.detailedGuidance {BleLink.shared.send("#NW,0");BleLink.shared.send("\(step.dir),\(distance)")}
-            else {BleLink.shared.send("#NW,1")}
+        if off <= routeTolerance && !rerouting && !arrivalCandidate {
+            if route.detailedGuidance {
+                if waitSent != "#NW,0" { waitSent = "#NW,0"; BleLink.shared.send("#NW,0") }
+                let turnCmd="\(step.dir),\(distance)"
+                if turnCmd != turnSent { turnSent = turnCmd; BleLink.shared.send(turnCmd) }
+            } else if waitSent != "#NW,1" {
+                waitSent = "#NW,1"; turnSent = ""; BleLink.shared.send("#NW,1")
+            }
         }
-        if roadSent != step.instruction {
-            roadSent = step.instruction
-            if let img = TextImage.render(String((step.instruction.isEmpty ? step.road : step.instruction).prefix(160)),maxW:290,size:26,minSize:18) { BleLink.shared.sendImage(slot:0,w:img.w,h:img.h,data:img.data) }
+        if roadSent != instruction {
+            roadSent = instruction
+            if let img = TextImage.render(String(instruction.prefix(160)),maxW:290,size:26,minSize:18) { BleLink.shared.sendImage(slot:0,w:img.w,h:img.h,data:img.data) }
         }
-        let seconds = route.steps.contains(where:{$0.duration>0}) ? Int(Double(step.duration)*fraction)+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.duration)} : Int(Double(route.seconds)*Double(remaining)/max(1,Double(route.totalMeters)))
+        let planned = route.steps.contains(where:{$0.duration>0}) ? Int(Double(step.duration)*fraction)+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.duration)} : Int(Double(route.seconds)*Double(remaining)/max(1,cum.last ?? 0))
+        let seconds = paced(planned, sampling: !simulation && off <= routeTolerance && !rerouting && !arrivalCandidate)
         remainingSeconds=seconds
-        let formatter = DateFormatter(); formatter.dateFormat = "HHmm"
-        let eta = formatter.string(from: Date().addingTimeInterval(Double(seconds)))
-        BleLink.shared.send("#e,\(remaining),\(eta),0")
+        let eta = Self.etaFormatter.string(from: Date().addingTimeInterval(Double(seconds)))
+        let etaCmd="#e,\(remaining),\(eta),0"
+        if etaCmd != etaSent { etaSent = etaCmd; BleLink.shared.send(etaCmd) }
         let footer = "\(NaviBridge.distText(remaining)) · \(eta.prefix(2)):\(eta.suffix(2))到达"
         if footer != footerSent {
             footerSent = footer
             if let img = TextImage.render(footer,maxW:240,size:19,minSize:15) { BleLink.shared.sendImage(slot:1,w:img.w,h:img.h,data:img.data) }
         }
-        // 转向播报：500 / 200 米两档，每段每档只念一次；文案仍用实际距离，不说虚数。
+        // 转向播报：按车速换算的远 / 中 / 近三档（约提前 30 / 12 / 3 秒），每段每档只念一次；文案使用实际剩余距离。
         var spokeTurn = false
-        if route.detailedGuidance, off <= routeTolerance, !rerouting,
-           turnAnnouncements.take(event: stepIndex, distance: distance, gates: Self.turnGates) != nil {
-            Speech.shared.speak("前方\(distance)米，\(instruction)")
+        if route.detailedGuidance, off <= routeTolerance, !rerouting,!arrivalCandidate,
+           turnAnnouncements.takeTier(event: stepIndex, distance: distance, thresholds: MotorGuidance.turnThresholds(kmh: speed)) != nil {
+            Speech.shared.speak(MotorGuidance.spoken(step,distance:distance))
             spokeTurn = true
         }
         // 高德把几公里直行并成一个转向分段，长直行里上面那条永远不会响 —— 红绿灯单独成事件。
         // 坐标来自 WebRouteMetadata 的驾车 SDK 旁路，已投影成“距起点多少米”。
         // distance > 200 是让位规则：进到转向播报范围就只播转向，不抢话。
-        if off <= routeTolerance, !rerouting, (!route.detailedGuidance || distance > 200), !spokeTurn {
+        if off <= routeTolerance, !rerouting,!arrivalCandidate, (!route.detailedGuidance || distance > 200), !spokeTurn {
             // 按沿程距离找当前这盏灯，不靠索引递增：偏航重算后元数据重载也不会串位
             let lamps = WebRouteMetadata.shared.lampDistances
             if let i = lamps.firstIndex(where: { $0 >= progress }) {
@@ -435,9 +522,7 @@ final class WebMotorSession: ObservableObject {
                 }
             }
         }
-        let end = route.points.last!
-        // Destination-ahead text never completes a trip. Require final progress AND physical proximity.
-        if confirmedArrival && MotorArrival.confirmed(remaining: remaining, offset: off, endpointDistance: NaviBridge.distM(p.lat,p.lng,end.lat,end.lng)) {
+        if confirmedArrival {
             let meters = Int(tripMeters), minutes = max(1,Int(Date().timeIntervalSince(startedAt)/60)), maximum = tripMax
             stop(sendCancel:false); arrived = true; status = "已到达"
             BleLink.shared.send("#O\(meters)/\(minutes)/\(maximum)"); BleLink.shared.send("A,0")

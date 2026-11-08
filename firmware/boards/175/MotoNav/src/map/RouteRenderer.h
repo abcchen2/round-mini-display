@@ -3,7 +3,7 @@
 void parseRoute(const uint8_t *p, uint32_t len) {
   routeSegmentCache.clear();
   routeN = 0;
-  if (len < 12) return;
+  if (!routeX || !routeY || !rbBox || len < 12) return;
   int frame = rdu16(p);
   int32_t x = rd32(p + 2), y = rd32(p + 6);
   int n = rdu16(p + 10);
@@ -25,7 +25,7 @@ void parseRoute(const uint8_t *p, uint32_t len) {
     rbBox[4 * b] = x0; rbBox[4 * b + 1] = y0; rbBox[4 * b + 2] = x1; rbBox[4 * b + 3] = y1;
   }
   routeN = n; routeFrame = frame;
-  routeProg = -1; routeSearchAt = 0;                  // v3.0 新路线：重新找车的位置
+  routeProg = -1; routeSearchAt = 0; routeJumpU = -1; // v3.0 新路线：重新找车的位置
   if (routeCum) {                                     // v5.0 路程表（路况颜色用）
     routeCum[0] = 0;
     for (int i = 1; i < n; i++) {
@@ -55,7 +55,7 @@ void parseRoute(const uint8_t *p, uint32_t len) {
   // v3.2 路线点后面可选：红绿灯个数(2) + 每个灯 x(4) y(4) 所在段号(2) 段内比例(1，0~255)
   lightN = 0;
   uint32_t pos = 12 + (uint32_t)(n - 1) * 4;
-  if (pos + 2 <= len) {
+  if (lightX && lightY && lightU && pos + 2 <= len) {
     int ln = rdu16(p + pos); pos += 2;
     for (int i = 0; i < ln && lightN < LIGHT_MAX && pos + 11 <= len; i++, pos += 11) {
       lightX[lightN] = rd32(p + pos); lightY[lightN] = rd32(p + pos + 4);
@@ -80,31 +80,63 @@ void routePt(float u, float &x, float &y) {
 }
 
 // 找车在路线上的位置：平时只在当前位置附近（往回 30 米、往前 300 米）找，
-// 这样掉头、绕回同一条路时不会跳到路线后面去；还没对上时才搜整条路线（最多每秒一次）
+// 这样掉头、绕回同一条路时不会跳到路线后面去；还没对上或局部窗口偏离超过 50 米时每秒搜一次整条路线。
+// 已对上后的全线搜索结果要连续两次一致才采用，避免偏航时一次就跳到 8 字形 / 往返路线的另一段。
+// 两个路线位置（段号 + 段内比例）之间的距离：有路程表按沿路线米数算，否则按直线距离
+float routeGap(float a, float b) {
+  if (routeCum) {
+    auto along = [](float u) {
+      int k = constrain((int)u, 0, routeN - 2);
+      return routeCum[k] + (u - k) * (routeCum[k + 1] - routeCum[k]);
+    };
+    return fabsf(along(a) - along(b));
+  }
+  float ax, ay, bx, by;
+  routePt(a, ax, ay); routePt(b, bx, by);
+  return sqrtf((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+}
+
 void updateRouteProgress(float cx, float cy) {
   if (routeN < 2) return;
-  int k0, k1;
+  auto searchRange = [&](int a, int b, float &best, float &bestU) {
+    best = 1e18f; bestU = -1;
+    for (int k = a; k <= b; k++) {
+      float ax = routeX[k], ay = routeY[k];
+      float vx = routeX[k + 1] - ax, vy = routeY[k + 1] - ay;
+      float L2 = vx * vx + vy * vy;
+      float t = L2 > 0 ? ((cx - ax) * vx + (cy - ay) * vy) / L2 : 0;
+      t = constrain(t, 0.0f, 1.0f);
+      float ex = ax + vx * t - cx, ey = ay + vy * t - cy;
+      float d2 = ex * ex + ey * ey;
+      if (d2 < best) { best = d2; bestU = k + t; }
+    }
+  };
+  float best = 1e18f, bestU = -1;
   if (routeProg < 0) {
     if (millis() - routeSearchAt < 1000 && routeSearchAt) return;
     routeSearchAt = millis();
-    k0 = 0; k1 = routeN - 2;
+    searchRange(0, routeN - 2, best, bestU);
   } else {
     int base = min((int)routeProg, routeN - 2);
     float acc = 0;
-    k0 = base; while (k0 > 0 && acc < 30) { acc += segLen(k0 - 1); k0--; }
+    int k0 = base; while (k0 > 0 && acc < 30) { acc += segLen(k0 - 1); k0--; }
     acc = 0;
-    k1 = base; while (k1 < routeN - 2 && acc < 300) { acc += segLen(k1); k1++; }
-  }
-  float best = 1e18f, bestU = -1;
-  for (int k = k0; k <= k1; k++) {
-    float ax = routeX[k], ay = routeY[k];
-    float vx = routeX[k + 1] - ax, vy = routeY[k + 1] - ay;
-    float L2 = vx * vx + vy * vy;
-    float t = L2 > 0 ? ((cx - ax) * vx + (cy - ay) * vy) / L2 : 0;
-    t = constrain(t, 0.0f, 1.0f);
-    float ex = ax + vx * t - cx, ey = ay + vy * t - cy;
-    float d2 = ex * ex + ey * ey;
-    if (d2 < best) { best = d2; bestU = k + t; }
+    int k1 = base; while (k1 < routeN - 2 && acc < 300) { acc += segLen(k1); k1++; }
+    searchRange(k0, k1, best, bestU);
+    if (best <= 50.0f * 50.0f) routeJumpU = -1;
+    else if (millis() - routeSearchAt >= 1000 || !routeSearchAt) {
+      routeSearchAt = millis();
+      float gBest, gU;
+      searchRange(0, routeN - 2, gBest, gU);
+      if (gBest <= 50.0f * 50.0f) {
+        // 间隔不超过 3.5 秒、沿路线相距不超过 150 米才算同一个位置（100 km/h 约 3 秒走 85 米）
+        if (routeJumpU >= 0 && millis() - routeJumpAt <= 3500 && routeGap(gU, routeJumpU) <= 150.0f) {
+          best = gBest; bestU = gU; routeJumpU = -1;
+        } else {
+          routeJumpU = gU; routeJumpAt = millis();
+        }
+      }
+    }
   }
   if (best > 50.0f * 50.0f) return;                   // 离路线超过 50 米（偏航中）：先不动
   routeProg = bestU;
