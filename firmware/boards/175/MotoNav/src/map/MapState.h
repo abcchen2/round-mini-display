@@ -147,6 +147,8 @@ unsigned long rerouteAt = 0, fasterAt = 0;
 int fasterMin = 0;
 bool gpsWeak = false;
 unsigned long routeSearchAt = 0;  // v3.0 上次全路线搜索的时间
+float routeJumpU = -1;            // 全线搜索找到、等待第二次确认的位置（-1 = 没有）
+unsigned long routeJumpAt = 0;
 
 // ---- 当前位置 ----
 bool mapOn = true;

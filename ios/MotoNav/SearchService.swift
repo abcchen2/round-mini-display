@@ -171,13 +171,14 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         lm.startUpdatingLocation()
     }
 
-    /// 巡航时打开：高精度、后台也继续
+    /// 巡航或导航时打开：高精度、后台也继续；任一导航/巡航还在运行时不降级定位精度
     func setPrecise(_ on: Bool) {
-        lm.desiredAccuracy = on ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyHundredMeters
+        let keepPrecise = on || (NaviBridge.shared.navigating && !NaviBridge.shared.emulating) || NaviBridge.shared.cruising || (WebMotorSession.shared.running && !WebMotorSession.shared.simulation)
+        lm.desiredAccuracy = keepPrecise ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyHundredMeters
         lm.distanceFilter = kCLDistanceFilterNone
-        lm.activityType = on ? (WebMotorSession.shared.running && WebMotorSession.shared.route?.request.bicycle == true ? .fitness : .automotiveNavigation) : .other
-        lm.pausesLocationUpdatesAutomatically = !on
-        lm.allowsBackgroundLocationUpdates = on
+        lm.activityType = keepPrecise ? (WebMotorSession.shared.running && WebMotorSession.shared.route?.request.bicycle == true ? .fitness : .automotiveNavigation) : .other
+        lm.pausesLocationUpdatesAutomatically = !keepPrecise
+        lm.allowsBackgroundLocationUpdates = keepPrecise
         lm.startUpdatingLocation()
     }
 

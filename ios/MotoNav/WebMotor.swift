@@ -87,6 +87,15 @@ struct MotorAnnouncementGate {
         closest[event] = gate
         return gate
     }
+    private var tiers: [Int: Int] = [:]
+    /// 档位距离会随车速变化，所以按档位序号（由远到近 0,1,2…）去重：同一档不会因为阈值变了再念一次。
+    /// thresholds 必须由远到近严格递减；返回命中的档位序号。
+    mutating func takeTier(event: Int, distance: Int, thresholds: [Int]) -> Int? {
+        guard distance >= 0, let tier = thresholds.indices.last(where: { distance <= thresholds[$0] }),
+              tier > (tiers[event] ?? -1) else { return nil }
+        tiers[event] = tier
+        return tier
+    }
 }
 
 enum MotorRoutes {
@@ -230,8 +239,8 @@ final class WebMotorSession: ObservableObject {
     private var turnAnnouncements = MotorAnnouncementGate()
     private var lampAnnouncements = MotorAnnouncementGate()
     private static let lampGates = [300, 60]
-    /// 转向播报档位（由近到远试）。原来按 distance/100 去重，500→498 时会 2 米内连播两句。
-    private static let turnGates = [500, 200, 30]
+    /// 剩余时间的快慢修正：实际用时 / 高德计划用时（平滑后），只作用于未来 10 分钟以内的路程
+    private var paceRatio = 1.0, paceAnchor: (time: Double, planned: Int)?
     /// 每笔定位都会算一次到达时间；DateFormatter 创建很贵，复用一个（只在主线程使用）。
     private static let etaFormatter: DateFormatter = {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HHmm"; return f
@@ -241,6 +250,7 @@ final class WebMotorSession: ObservableObject {
     private var reroutePolicy=MotorReroutePolicy(), rerouteTask: Task<Void,Never>?
     private var routeTolerance=25.0, statusUntil=0.0, replanStartedAt=0.0
     private var roadSent = "", footerSent = ""
+    private var speedSent = "", weakSent = "", waitSent = "", turnSent = "", etaSent = ""
     private var startedAt = Date(), tripMeters = 0.0, tripMax = 0, previousFix: CLLocation?
     private var viaProgress: [Double] = [], nextVia = 0, lastFix: Date?
     private var tracker: MotorRouteTracker?
@@ -267,7 +277,8 @@ final class WebMotorSession: ObservableObject {
         instruction="等待定位";turnMetres=0;turnDirection=""
         speed = simulate ? (NavigationSpeed.values.contains(simulationSpeed) ? simulationSpeed : 60) : 0
         reroutePolicy.reset();routeTolerance=25;statusUntil=0; nextVia = 0; lastFix = nil; viaProgress = route.request.vias.map { v in nearestAlong(v) }
-        roadSent = ""; footerSent = ""; startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil
+        roadSent = ""; footerSent = ""; speedSent = ""; weakSent = ""; waitSent = ""; turnSent = ""; etaSent = ""
+        startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil; paceRatio = 1; paceAnchor = nil
         turnAnnouncements = MotorAnnouncementGate(); lampAnnouncements = MotorAnnouncementGate()
         status = simulate ? "模拟导航" : "等待定位"; token = UUID()
         UIApplication.shared.isIdleTimerDisabled = true
@@ -284,7 +295,7 @@ final class WebMotorSession: ObservableObject {
             if self.lastFix == nil || Date().timeIntervalSince(self.lastFix!)>3 {
                 if let current=self.route {WebRouteMetadata.shared.push(route:current,progress:self.progress,fresh:false,speed:0)}
                 if Date().timeIntervalSince(self.lastFix ?? self.startedAt)>10 {
-                    if ProcessInfo.processInfo.systemUptime>=self.statusUntil {self.status="GPS 信号弱，等待新定位"};BleLink.shared.send("#x,1")
+                    if ProcessInfo.processInfo.systemUptime>=self.statusUntil {self.status="GPS 信号弱，等待新定位"};self.weakSent="#x,1";BleLink.shared.send("#x,1")
                 }
             }
         }
@@ -303,6 +314,7 @@ final class WebMotorSession: ObservableObject {
             }
         } else { RideRecorder.shared.start("网页路线导航"); LocationService.shared.setPrecise(true) }
         if simulate {render(route.points[0], off: 0)} else {
+            speedSent="#v,0";weakSent="#x,1";waitSent="#NW,1"
             BleLink.shared.send("#v,0");BleLink.shared.send("#x,1");BleLink.shared.send("#NW,1")
         }
     }
@@ -311,8 +323,12 @@ final class WebMotorSession: ObservableObject {
         rerouteTask?.cancel();rerouteTask=nil;reroutePolicy.reset()
         if rerouting {BleLink.shared.send("#y,0")}
         watchdog?.invalidate();watchdog=nil;WebRouteMetadata.shared.stop()
-        if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")}; LocationService.shared.setPrecise(false) }
+        let wasRunning = running
+        if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")} }
+        speedSent="";weakSent="";waitSent="";turnSent="";etaSent=""
         running = false; rerouting = false; UIApplication.shared.isIdleTimerDisabled = false
+        // setPrecise 会检查各导航是否仍在运行，必须在 running=false 之后调用，否则精度永远降不下来
+        if wasRunning { LocationService.shared.setPrecise(false) }
     }
     private func at(_ distance: Double) -> MotorPoint {
         route?.at(distance) ?? MotorPoint(lat:0,lng:0)
@@ -325,18 +341,19 @@ final class WebMotorSession: ObservableObject {
         guard let match=tracker?.update(point,accuracy:l.horizontalAccuracy,now:ProcessInfo.processInfo.systemUptime,heading:course) else{return}
         let wasArrivalCandidate=arrivalCandidate
         lastFix = l.timestamp;confirmedArrival=match.arrived;arrivalCandidate=match.arrivalCandidate
-        if arrivalCandidate,!wasArrivalCandidate {Speech.shared.stopNow();BleLink.shared.send("#NW,1")}
+        if arrivalCandidate,!wasArrivalCandidate {Speech.shared.stopNow();waitSent="#NW,1";turnSent="";BleLink.shared.send("#NW,1")}
         if let previous = previousFix { let d = l.distance(from: previous); if d < 300 { tripMeters += d } }
         let measuredSpeed=l.speed.isFinite ? min(250,max(0,l.speed*3.6)) : 0
         previousFix = l; tripMax = max(tripMax,Int(measuredSpeed))
         speed = Int(measuredSpeed)
         if l.course>=0,l.speed>0.3 {realHeading=l.course}
         if match.needsReplan {
-            if !recoveringPosition {Speech.shared.stopNow();BleLink.shared.send("#NW,1")}
+            if !recoveringPosition {Speech.shared.stopNow();waitSent="#NW,1";turnSent="";BleLink.shared.send("#NW,1")}
             recoveringPosition=true;confirmedArrival=false
             position=point;turnMetres=0;turnDirection="";instruction="定位已恢复，正在核对路线"
             if !rerouting,ProcessInfo.processInfo.systemUptime>=statusUntil {status="定位已恢复，正在核对路线"}
             MapFeeder.shared.onLocation(lat:point.lat,lng:point.lng,bearing:realHeading ?? 0,kmh:speed)
+            speedSent="#v,\(speed)";weakSent="#x,1"
             BleLink.shared.send("#v,\(speed)");BleLink.shared.send("#x,1")
             replan(point)
             return
@@ -395,6 +412,7 @@ final class WebMotorSession: ObservableObject {
                 self.route=new;self.cum=new.cum;self.progress=0;self.stepIndex=0;self.stepProgress=MotorStepProgress();self.nextVia=0;self.arrivalCandidate=false;self.replanCount+=1
                 self.tracker=MotorRouteTracker(new.points);self.confirmedArrival=false;self.lastFix=nil;self.previousFix=nil;self.metadataSuspended=false;self.recoveringPosition=false
                 self.position=nil;self.turnMetres=0;self.turnDirection="";self.instruction="等待定位"
+                self.waitSent="#NW,1";self.turnSent="";self.etaSent="";self.paceAnchor=nil   // 快慢比值保留：骑行习惯不随换线改变
                 BleLink.shared.send("#NW,1")
                 self.roadSent="";self.footerSent=""
                 self.turnAnnouncements = MotorAnnouncementGate(); self.lampAnnouncements = MotorAnnouncementGate()
@@ -422,6 +440,23 @@ final class WebMotorSession: ObservableObject {
         let index = route.points.indices.min { NaviBridge.distM(p.lat,p.lng,route.points[$0].lat,route.points[$0].lng) < NaviBridge.distM(p.lat,p.lng,route.points[$1].lat,route.points[$1].lng) } ?? 0
         return cum[index]
     }
+    /// 高德计划剩余时间 → 按骑行实际快慢修正后的剩余时间。
+    /// 在路线上每骑满 60 秒（且计划时间至少消耗 30 秒，或已过 3 分钟，比如堵车）取一次“实际/计划”比值并平滑；
+    /// 偏航、重算、确认到达期间不取样。修正量只按未来最多 10 分钟的路程计算，长途不会被一时快慢带偏。
+    private func paced(_ planned: Int, sampling: Bool) -> Int {
+        guard sampling else { paceAnchor = nil; return max(0, planned + Int(((paceRatio - 1) * Double(min(planned, 600))).rounded())) }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let a = paceAnchor {
+            let used = Double(a.planned - planned), elapsed = now - a.time
+            if used < -60 { paceAnchor = (now, planned) }                       // 计划时间反而变多：换段/数据变化，重新起算
+            else if elapsed >= 60 && (used >= 30 || elapsed >= 180) {
+                let sample = min(3, max(0.5, elapsed / max(10, used)))
+                paceRatio = min(2, max(0.6, paceRatio * 0.7 + sample * 0.3))
+                paceAnchor = (now, planned)
+            }
+        } else { paceAnchor = (now, planned) }
+        return max(0, planned + Int(((paceRatio - 1) * Double(min(planned, 600))).rounded()))
+    }
     private func render(_ p: MotorPoint, off: Double) {
         guard running, let route = route else { return }
         position = p
@@ -438,30 +473,38 @@ final class WebMotorSession: ObservableObject {
         let heading = simulation ? geometryHeading : (realHeading ?? geometryHeading)
         MapFeeder.shared.onLocation(lat: p.lat,lng: p.lng,bearing: heading,kmh: speed)
         _ = MapFeeder.shared.onRoute(key: route.id.uuidString,coords: route.coords,lights: WebRouteMetadata.shared.lampCoords())
-        BleLink.shared.send("#v,\(speed)")
-        BleLink.shared.send("#x,0")
+        let speedCmd="#v,\(speed)"
+        if speedCmd != speedSent { speedSent = speedCmd; BleLink.shared.send(speedCmd) }
+        if weakSent != "#x,0" { weakSent = "#x,0"; BleLink.shared.send("#x,0") }
         WebRouteMetadata.shared.push(route:route,progress:progress,fresh:off<=routeTolerance && !rerouting,speed:speed)
         if off <= routeTolerance && !rerouting && !arrivalCandidate {
-            if route.detailedGuidance {BleLink.shared.send("#NW,0");BleLink.shared.send("\(step.dir),\(distance)")}
-            else {BleLink.shared.send("#NW,1")}
+            if route.detailedGuidance {
+                if waitSent != "#NW,0" { waitSent = "#NW,0"; BleLink.shared.send("#NW,0") }
+                let turnCmd="\(step.dir),\(distance)"
+                if turnCmd != turnSent { turnSent = turnCmd; BleLink.shared.send(turnCmd) }
+            } else if waitSent != "#NW,1" {
+                waitSent = "#NW,1"; turnSent = ""; BleLink.shared.send("#NW,1")
+            }
         }
         if roadSent != instruction {
             roadSent = instruction
             if let img = TextImage.render(String(instruction.prefix(160)),maxW:290,size:26,minSize:18) { BleLink.shared.sendImage(slot:0,w:img.w,h:img.h,data:img.data) }
         }
-        let seconds = route.steps.contains(where:{$0.duration>0}) ? Int(Double(step.duration)*fraction)+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.duration)} : Int(Double(route.seconds)*Double(remaining)/max(1,cum.last ?? 0))
+        let planned = route.steps.contains(where:{$0.duration>0}) ? Int(Double(step.duration)*fraction)+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.duration)} : Int(Double(route.seconds)*Double(remaining)/max(1,cum.last ?? 0))
+        let seconds = paced(planned, sampling: !simulation && off <= routeTolerance && !rerouting && !arrivalCandidate)
         remainingSeconds=seconds
         let eta = Self.etaFormatter.string(from: Date().addingTimeInterval(Double(seconds)))
-        BleLink.shared.send("#e,\(remaining),\(eta),0")
+        let etaCmd="#e,\(remaining),\(eta),0"
+        if etaCmd != etaSent { etaSent = etaCmd; BleLink.shared.send(etaCmd) }
         let footer = "\(NaviBridge.distText(remaining)) · \(eta.prefix(2)):\(eta.suffix(2))到达"
         if footer != footerSent {
             footerSent = footer
             if let img = TextImage.render(footer,maxW:240,size:19,minSize:15) { BleLink.shared.sendImage(slot:1,w:img.w,h:img.h,data:img.data) }
         }
-        // 转向播报：500 / 200 / 30 米三档，每段每档只念一次；文案使用实际剩余距离。
+        // 转向播报：按车速换算的远 / 中 / 近三档（约提前 30 / 12 / 3 秒），每段每档只念一次；文案使用实际剩余距离。
         var spokeTurn = false
         if route.detailedGuidance, off <= routeTolerance, !rerouting,!arrivalCandidate,
-           turnAnnouncements.take(event: stepIndex, distance: distance, gates: Self.turnGates) != nil {
+           turnAnnouncements.takeTier(event: stepIndex, distance: distance, thresholds: MotorGuidance.turnThresholds(kmh: speed)) != nil {
             Speech.shared.speak(MotorGuidance.spoken(step,distance:distance))
             spokeTurn = true
         }

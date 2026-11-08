@@ -19,6 +19,13 @@ enum MotorGuidance {
         let action=actionText(step)
         return distance<=15 ? "前方路口，\(action)" : "前方\(distance)米，\(action)"
     }
+    /// 转向播报三档（由远到近），按到路口的剩余时间而不是固定米数：约 30 秒、12 秒、3 秒前各播一次，
+    /// 并限制在合理范围内。60 km/h 时为 500 / 200 / 50 米，与原固定档位接近；停车或低速时取下限。
+    static func turnThresholds(kmh: Int) -> [Int] {
+        let v = Double(min(200, max(0, kmh))) / 3.6
+        func clamp(_ x: Double, _ lo: Double, _ hi: Double) -> Int { Int(min(hi, max(lo, x)).rounded()) }
+        return [clamp(v * 30, 250, 800), clamp(v * 12, 100, 300), clamp(v * 3, 30, 80)]
+    }
     static func reliableHeading(speed: Double, course: Double, courseAccuracy: Double, accuracy: Double) -> Double? {
         guard speed.isFinite,speed>=4,course.isFinite,(0..<360).contains(course),
               courseAccuracy.isFinite,(0...30).contains(courseAccuracy),accuracy.isFinite,(0...25).contains(accuracy) else {return nil}

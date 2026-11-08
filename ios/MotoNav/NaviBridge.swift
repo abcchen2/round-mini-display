@@ -415,7 +415,9 @@ final class NaviBridge: NSObject, ObservableObject {
 
     func stop() {
         // stopNavi may emit emulator-end immediately. Close the gate first.
+        let hadActive = navigating || showArrived || arrival.canClearArrival(arrival.generation)
         arrival.cancel(arrival.generation)
+        guard hadActive else { return }
         manager.stopNavi()
         finish("C", "已退出导航")
     }
@@ -427,13 +429,13 @@ final class NaviBridge: NSObject, ObservableObject {
             guard let event = event, arrival.complete(token, event: event) else { return }
         } else { arrival.cancel(token) }
         RideRecorder.shared.finish()
-        LocationService.shared.setPrecise(false)
         MapFeeder.shared.onNaviEnd()
         ShareGuide.shared.stop()
         tick?.invalidate(); tick = nil
         arriveSeq += 1
         showArrived = arrived                       // 先设这个再设 navigating：导航画面据此决定马上关还是等 4 秒
         navigating = false
+        LocationService.shared.setPrecise(false)    // 必须在 navigating=false 之后：setPrecise 会检查导航是否仍在运行
         info = text
         shownDir = ""; shownDist = -1
         clearSuggest()
@@ -447,7 +449,7 @@ final class NaviBridge: NSObject, ObservableObject {
             let seq = arriveSeq
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
                 guard let self = self, seq == self.arriveSeq, self.arrival.canClearArrival(token),
-                      !self.navigating, !self.cruising else { return }
+                      !self.navigating, !self.cruising, !WebMotorSession.shared.running else { return }
                 self.manager.stopNavi()
                 self.resetState()
                 self.showArrived = false
@@ -895,9 +897,13 @@ final class NaviBridge: NSObject, ObservableObject {
         if changed { pushCamMap() }
     }
 
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "HH:mm:ss"; return f
+    }()
+
     /// 巡航电子眼 / 道路设施：取出位置、类型、限速、距离，合并后发给圆屏
     fileprivate func onCruiseItems(_ items: [AMapNaviTrafficFacilityInfo], camerasOnly camCb: Bool, name: String) {
-        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+        let f = Self.timeFormatter
         if items.isEmpty {
             if camCb { cruiseCamPts = [] } else { facPts = [:] }
             pushCamMap()
@@ -1135,7 +1141,7 @@ extension NaviBridge {
         }
         camPts = pts
         pushCamMap()
-        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+        let f = Self.timeFormatter
         camRaw = "\(list.count) 个：\(raw)（\(f.string(from: Date()))）"
         lastCamAt = Date()
         if let b = best, let p = b.coordinate {

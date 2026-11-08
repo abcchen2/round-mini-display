@@ -8,6 +8,9 @@ void resetNavState() {
   inNav = false;
   navWaiting = false;
   navArrivedHold = false;
+  navDir = ""; navDist = 0; navAngle = NAN;
+  routeN = 0; routeProg = -1; routeSearchAt = 0; routeJumpU = -1; lightN = 0;
+  corrX = 0; corrY = 0; corrAt = 0; hdgRate = 0; viewInit = false;
   tripOn = false; lightDist = -1;                       // v3.1
   mapCamN = 0;                                          // v3.5
   ghostN = 0;                                           // v4.4
@@ -17,7 +20,7 @@ void resetNavState() {
   hasCam = false;
   laneN = 0;
   ringActive = false; ringDir = "";
-  for (int i = 0; i < 3; i++) { imgs[i].showW = 0; imgs[i].showH = 0; imgs[i].recvId = -1; }   // v5.3 天气栏 3、4 留着
+  for (int i = 0; i < 3; i++) { imgs[i].showW = 0; imgs[i].showH = 0; imgs[i].recvId = -1; imgs[i].recvMask = 0; imgs[i].recvParts = 0; }   // v5.3 天气栏 3、4 留着
 }
 
 int hexVal(char c) {
