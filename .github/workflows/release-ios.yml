@@ -18,6 +18,12 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - name: Verify 1.75C cover data and phone battery packet
+        run: |
+          swiftc ios/MotoNav/Screen175CExtras.swift ios/tests/screen175c/main.swift -o /tmp/screen175c
+          /tmp/screen175c
+          swiftc ios/MotoNav/CoverEncoder.swift ios/tests/cover/main.swift -o /tmp/cover175c
+          /tmp/cover175c
       - name: Verify report export and record recovery
         run: |
           swiftc ios/MotoNav/MapReportExport.swift ios/tests/map-export/main.swift -o /tmp/map-export
