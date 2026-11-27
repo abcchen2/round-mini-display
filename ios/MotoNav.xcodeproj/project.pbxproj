@@ -73,6 +73,7 @@
 		B08E726101614C6B8182A8F4 /* MapReportExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C08E726101614C6B8182A8F4 /* MapReportExport.swift */; };
 		175C00000000000000000003 /* CoverEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 175C00000000000000000001 /* CoverEncoder.swift */; };
 		175C00000000000000000004 /* Screen175CExtras.swift in Sources */ = {isa = PBXBuildFile; fileRef = 175C00000000000000000002 /* Screen175CExtras.swift */; };
+		175C00000000000000000006 /* Tpms175C.swift in Sources */ = {isa = PBXBuildFile; fileRef = 175C00000000000000000005 /* Tpms175C.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -172,6 +173,7 @@
 		C08E726101614C6B8182A8F4 /* MapReportExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapReportExport.swift; sourceTree = "<group>"; };
 		175C00000000000000000001 /* CoverEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverEncoder.swift; sourceTree = "<group>"; };
 		175C00000000000000000002 /* Screen175CExtras.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Screen175CExtras.swift; sourceTree = "<group>"; };
+		175C00000000000000000005 /* Tpms175C.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tpms175C.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -285,6 +287,7 @@
 				5D6EE3F5D91C4F03F5B44814 /* MotoNav-Bridging-Header.h */,
 				C671E80BBEA3EB1E9311EB12 /* MusicBridge.swift */,
 				175C00000000000000000002 /* Screen175CExtras.swift */,
+				175C00000000000000000005 /* Tpms175C.swift */,
 				175C00000000000000000001 /* CoverEncoder.swift */,
 				88F6F7FEE25CC563EEC49A1F /* CruiseIdleTimer.swift */,
 				CE47CC0D351EABDC9EEE6D04 /* RasterProcessing.swift */,
@@ -516,6 +519,7 @@
 				368AB74EB99CA2BEB7ACF4A1 /* RotationDial.swift in Sources */,
 				D5BE622C01F486F6A26CC504 /* MusicBridge.swift in Sources */,
 				175C00000000000000000004 /* Screen175CExtras.swift in Sources */,
+				175C00000000000000000006 /* Tpms175C.swift in Sources */,
 				175C00000000000000000003 /* CoverEncoder.swift in Sources */,
 				F336897359EC15D9BD17B152 /* CruiseIdleTimer.swift in Sources */,
 				FB6E59E7B7F70EACF4129EE5 /* RasterProcessing.swift in Sources */,
@@ -550,7 +554,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -634,7 +638,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -659,7 +663,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -686,7 +690,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 22;
+				CURRENT_PROJECT_VERSION = 23;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;

@@ -55,6 +55,9 @@ final class BleLink: NSObject, ObservableObject {
     @Published private(set) var extras175CEnabled = false
     @Published private(set) var cover175COnline = false
     @Published var cover175CStatus = ""
+    @Published private(set) var notification175CSupported = false
+    @Published private(set) var notification175CEnabled = false
+    @Published private(set) var notification175CStatus = ""
     private var cover175CData: Data?
     private var cover175CFlight: (id: Int, deadline: Double)?
     private var cover175CAttempts = 0
@@ -107,6 +110,7 @@ final class BleLink: NSObject, ObservableObject {
             MusicBridge.shared.syncLyrics()
             MusicBridge.shared.pollMetadata()
             Screen175CExtras.shared.tick()
+            Tpms175C.shared.tick()
             self?.flush175CCover()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
                   Date().timeIntervalSince(self.lastWriteAt) > 1.5 else { return }
@@ -197,6 +201,9 @@ final class BleLink: NSObject, ObservableObject {
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
         MusicBridge.shared.resetAMS()
         peripheral = p
+        notification175CSupported = false
+        notification175CStatus = ""
+        notification175CEnabled = UserDefaults.standard.bool(forKey: "screen_175c_notifications_\(p.identifier)")
         extras175CEnabled = UserDefaults.standard.bool(forKey: "screen_175c_\(p.identifier)")
         cover175COnline = UserDefaults.standard.bool(forKey: "screen_175c_cover_online_\(p.identifier)")
         p.delegate = self
@@ -204,7 +211,8 @@ final class BleLink: NSObject, ObservableObject {
         if p.state == .connected { discover(p);return }
         status = "正在连接…"
         handshake.begin(.connecting,now:ProcessInfo.processInfo.systemUptime)
-        central.connect(p, options: nil)
+        let requestNotifications = extras175CEnabled && notification175CEnabled
+        central.connect(p, options: requestNotifications ? [CBConnectPeripheralOptionRequiresANCS: true] : nil)
     }
 
     private func discover(_ p: CBPeripheral) {
@@ -381,8 +389,27 @@ final class BleLink: NSObject, ObservableObject {
     func set175C(_ enabled: Bool) {
         guard verified, isReady, let id = peripheral?.identifier else { return }
         UserDefaults.standard.set(enabled, forKey: "screen_175c_\(id)")
+        if !enabled && extras175CEnabled {
+            sendOnce(LyTpms175CWire.packet(front: nil, rear: nil))
+            if notification175CSupported { sendOnce("#ANCS,0") }
+        }
         extras175CEnabled = enabled
         Screen175CExtras.shared.setOptions()
+        Tpms175C.shared.tick()
+        if enabled { sync175CNotifications() }
+    }
+
+    func set175CNotifications(_ enabled: Bool) {
+        guard verified, isReady, extras175CEnabled, notification175CSupported, let id = peripheral?.identifier else { return }
+        UserDefaults.standard.set(enabled, forKey: "screen_175c_notifications_\(id)")
+        notification175CEnabled = enabled
+        sync175CNotifications()
+    }
+
+    private func sync175CNotifications() {
+        guard isReady, verified, extras175CEnabled, notification175CSupported else { return }
+        sendOnce(notification175CEnabled ? "#ANCS,1" : "#ANCS,0")
+        notification175CStatus = notification175CEnabled ? "正在连接 Apple 通知服务…" : ""
     }
 
     func set175COnlineCover(_ enabled: Bool) {
@@ -741,6 +768,22 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             mediaHIDSupported = true
             sendOnce("#AMS?")
             MusicBridge.shared.syncMode(); MusicBridge.shared.refresh(force: true); return
+        }
+        if s == "CAP,ANCS,1" {
+            if !notification175CSupported {
+                notification175CSupported = true
+                sync175CNotifications()
+            }
+            return
+        }
+        if s == "ANCS,READY" || s == "ANCS,WAIT" || s == "ANCS,CONNECTING" || s == "ANCS,OFF" {
+            guard notification175CSupported, verified, extras175CEnabled, notification175CEnabled else { return }
+            switch s {
+            case "ANCS,READY": notification175CStatus = "已订阅：仅显示通知分类"
+            case "ANCS,WAIT": notification175CStatus = "等待 iPhone 授权。停车后重连圆屏，在系统蓝牙中允许共享通知。"
+            default: notification175CStatus = "正在连接 Apple 通知服务…"
+            }
+            return
         }
         if s == "CAP,LYR,1" {
             mediaLyricsSupported = true

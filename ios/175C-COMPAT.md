@@ -21,3 +21,10 @@
 2. 连接 MotoNav，不启动导航；打开扩展，检查圆屏的手机电量。用 Apple Music 模式试本机封面和进度。
 3. 如需测试系统媒体模式，先完成 iPhone 系统蓝牙配对；播放歌曲，确认切歌正常，再选择是否开启联网封面。让两首歌快速切换，核对旧封面不会覆盖新歌曲。
 4. 用先前验证过的模拟路线测试基础导航，观察发图期间媒体不抢占；退出后再验证圆屏与 Mobee 双向切换。
+
+
+## Build 23：LyTPMS 和 iPhone 通知（需要候选固件）
+
+- LyTPMS 广播型气嘴，仅当前支持的 0x00AC / 0xC7 格式。扫描只在 App 前台、当前圆屏已验证连接且启用适配时运行；停车后手动单独唤醒气嘴并分配前后轮。读数不会被其他附近气嘴自动替换。轮胎无新广播超过 60 秒即标记为无数据，不作为车辆安全警报。
+- iPhone 通知使用 [Apple ANCS](https://developer.apple.com/library/archive/documentation/CoreBluetooth/Reference/AppleNotificationCenterServiceSpecification/Specification/Specification.html)，在圆屏的加密连接上只订阅分类和新增事件。默认关闭，不读正文、标题、联系人或 App 名，不重放旧通知，不联网，不在导航页弹出。
+- 兼容性：现有固件可以收 1.75C 格式的胎压包，但没有 OBD 时会隐藏胎压。Build 23 要与修正过显示逻辑、支持 ANCS 的 1.75C 候选固件同时使用。Build 22 仍可独立使用。

@@ -722,6 +722,19 @@ struct ContentView: View {
                 .disabled(!ble.isReady || !ble.verified)
             Text("只为使用 1.75C 扩展固件的圆屏开启。开启后同步 iPhone 电量，并在系统音乐授权模式下发送可用的封面。")
                 .font(.caption).foregroundColor(ContentView.sub)
+            if ble.extras175CEnabled {
+                Tpms175CControls()
+                if ble.notification175CSupported {
+                    Toggle("iPhone 通知分类", isOn: Binding(get: { ble.notification175CEnabled },
+                                                        set: { ble.set175CNotifications($0) }))
+                        .disabled(!ble.verified || !ble.isReady)
+                    Text("只显示来电、日历等分类。不会读取联系人、通知标题或正文。首次使用可能需要在系统蓝牙中允许共享通知。")
+                        .font(.caption).foregroundColor(.secondary)
+                    if ble.notification175CEnabled && !ble.notification175CStatus.isEmpty {
+                        Text(ble.notification175CStatus).font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
             if ble.extras175CEnabled && settings.musicHID {
                 Toggle("联网匹配专辑封面", isOn: Binding(get: { ble.cover175COnline }, set: { ble.set175COnlineCover($0) }))
                     .disabled(!ble.isReady || !ble.verified)
