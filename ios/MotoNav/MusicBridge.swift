@@ -22,6 +22,8 @@ final class MusicBridge {
     func resetAMS() {
         metadata.reset(); replay.reset(); lyricsSync.reset(); LyricsBridge.shared.stop(); lastText = ""; lastState = ""
         BleLink.shared.mediaSongInfo = ""
+        BleLink.shared.cancel175CCover()
+        Screen175CExtras.shared.reset()
     }
     func syncMode() {
         guard BleLink.shared.mediaHIDSupported else { return }
@@ -50,6 +52,7 @@ final class MusicBridge {
     func refresh(force: Bool = false) {
         if Settings.shared.musicHID {
             LyricsBridge.shared.update(metadata, force: force)
+            Screen175CExtras.shared.applyHID(metadata)
             let ready = BleLink.shared.mediaHIDSupported && BleLink.shared.mediaHIDReady && BleLink.shared.mediaHIDMode
             if metadata.ready {
                 let title = metadata.title.isEmpty ? "等待播放器歌曲信息" : metadata.title + (metadata.values[0].partial ? "…" : "")
@@ -62,6 +65,7 @@ final class MusicBridge {
         }
         LyricsBridge.shared.stop()
         guard MPMediaLibrary.authorizationStatus() == .authorized else {
+            Screen175CExtras.shared.applyLocal(nil)
             publish(title: "请在手机授权 Apple Music", artist: "仅支持系统音乐 App", available: false, playing: false, force: force)
             return
         }
@@ -72,11 +76,18 @@ final class MusicBridge {
             NotificationCenter.default.addObserver(self, selector: #selector(changed), name: .MPMusicPlayerControllerPlaybackStateDidChange, object: player)
         }
         let item = player.nowPlayingItem
-        publish(title: item?.title ?? "请先在音乐 App 播放歌曲", artist: item?.artist ?? "Apple Music", available: item != nil, playing: player.playbackState == .playing, force: force)
+        Screen175CExtras.shared.applyLocal(item)
+        publish(title: item?.title ?? "请先在音乐 App 播放歌曲", artist: item?.artist ?? "Apple Music", available: item != nil, playing: player.playbackState == .playing, force: force,
+                progress: (item?.playbackDuration ?? 0, player.currentPlaybackTime))
     }
     @objc private func changed() { DispatchQueue.main.async { self.refresh() } }
-    private func publish(title: String, artist: String, available: Bool, playing: Bool, force: Bool) {
-        let text = title + "\n" + artist, state = "#Z,\(available ? 1 : 0),\(playing ? 1 : 0),\(available ? 7 : 0)"
+    private func publish(title: String, artist: String, available: Bool, playing: Bool, force: Bool,
+                         progress: (duration: Double, position: Double)? = nil) {
+        let text = title + "\n" + artist
+        var state = "#Z,\(available ? 1 : 0),\(playing ? 1 : 0),\(available ? 7 : 0)"
+        if BleLink.shared.extras175CEnabled, let progress {
+            state += CoverCatalog175C.progressSuffix(duration: progress.duration, position: progress.position)
+        }
         if force || text != lastText {
             lastText = text
             for (slot, value) in [(5, title), (6, artist)] {

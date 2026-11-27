@@ -52,6 +52,13 @@ final class BleLink: NSObject, ObservableObject {
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
+    @Published private(set) var extras175CEnabled = false
+    @Published private(set) var cover175COnline = false
+    @Published var cover175CStatus = ""
+    private var cover175CData: Data?
+    private var cover175CFlight: (id: Int, deadline: Double)?
+    private var cover175CAttempts = 0
+    private var cover175CID = Int.random(in: 0...255)
     private var rxChar: CBCharacteristic?
     private var txChar: CBCharacteristic?
     private var wantConnected = true
@@ -99,6 +106,8 @@ final class BleLink: NSObject, ObservableObject {
             self?.requestBuildingCapability()
             MusicBridge.shared.syncLyrics()
             MusicBridge.shared.pollMetadata()
+            Screen175CExtras.shared.tick()
+            self?.flush175CCover()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
                   Date().timeIntervalSince(self.lastWriteAt) > 1.5 else { return }
             self.send("P")
@@ -188,6 +197,8 @@ final class BleLink: NSObject, ObservableObject {
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
         MusicBridge.shared.resetAMS()
         peripheral = p
+        extras175CEnabled = UserDefaults.standard.bool(forKey: "screen_175c_\(p.identifier)")
+        cover175COnline = UserDefaults.standard.bool(forKey: "screen_175c_cover_online_\(p.identifier)")
         p.delegate = self
         rxChar=nil;txChar=nil
         if p.state == .connected { discover(p);return }
@@ -335,6 +346,11 @@ final class BleLink: NSObject, ObservableObject {
     /// 每片：'M' 类型 编号 总片数(2) 片序号(2) 总字节(4) 偏移(4) + 数据
     func sendBulk(type: Int, id: Int, data: Data) {
         guard isReady else { return }
+        if (type == 1 || type == 3), cover175CFlight != nil {
+            bulkQ.cancel(types: [CoverEncoder.typeCover])
+            cover175CFlight = nil
+            cover175CAttempts = 0
+        }
         if type==3,bulkPending(type:type,id:id) {return}
         let payload = maxWrite - BULK_HEADER
         if payload < 100 { return }                     // 没协商到大数据包就不发
@@ -360,6 +376,67 @@ final class BleLink: NSObject, ObservableObject {
         bulkQ.replace(type:type,id:id,packets:packets,prioritize:type==MapFeeder.TYPE_ROUTE)
         bulkKB += total / 1024
         pump()
+    }
+
+    func set175C(_ enabled: Bool) {
+        guard verified, isReady, let id = peripheral?.identifier else { return }
+        UserDefaults.standard.set(enabled, forKey: "screen_175c_\(id)")
+        extras175CEnabled = enabled
+        Screen175CExtras.shared.setOptions()
+    }
+
+    func set175COnlineCover(_ enabled: Bool) {
+        guard verified, isReady, extras175CEnabled, let id = peripheral?.identifier else { return }
+        UserDefaults.standard.set(enabled, forKey: "screen_175c_cover_online_\(id)")
+        cover175COnline = enabled
+        Screen175CExtras.shared.setOptions()
+    }
+
+    func cancel175CCover() {
+        bulkQ.cancel(types: [CoverEncoder.typeCover])
+        cover175CFlight = nil
+        cover175CData = nil
+        cover175CAttempts = 0
+    }
+
+    func queue175CCover(_ data: Data) {
+        cancel175CCover()
+        guard data.count <= 48 * 1024 else { return }
+        cover175CData = data
+        flush175CCover()
+    }
+
+    private func flush175CCover() {
+        guard isReady, verified, let data = cover175CData else { return }
+        let nav = NaviBridge.shared
+        if nav.navigating || nav.cruising || WebMotorSession.shared.running {
+            if cover175CFlight != nil {
+                bulkQ.cancel(types: [CoverEncoder.typeCover])
+                cover175CFlight = nil
+                cover175CAttempts = 0
+            }
+            return
+        }
+        guard maxWrite >= BULK_HEADER + 100 else {
+            if extras175CEnabled { cover175CStatus = "圆屏未协商到封面传输所需的蓝牙包大小" }
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let flight = cover175CFlight {
+            guard now > flight.deadline else { return }
+            bulkQ.cancel(types: [CoverEncoder.typeCover])
+            cover175CFlight = nil
+        }
+        guard !bulkPending else { return }
+        guard cover175CAttempts < 2 else {
+            cancel175CCover()
+            if extras175CEnabled { cover175CStatus = "圆屏未确认收到封面" }
+            return
+        }
+        cover175CAttempts += 1
+        cover175CID = (cover175CID + 1) & 255
+        cover175CFlight = (cover175CID, now + 15)
+        sendBulk(type: CoverEncoder.typeCover, id: cover175CID, data: data)
     }
 
     /// 还有大块数据没发完
@@ -689,6 +766,14 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         if parts.first == "HID", parts.count == 3 {
             mediaHIDMode = parts[1] == "1"; mediaHIDReady = parts[2] == "1"
             MusicBridge.shared.refresh(force: true); return
+        }
+        if (parts.first == "K" || parts.first == "N"), parts.count == 3,
+           parts[1] == "6", let id = Int(parts[2]) {
+            guard cover175CFlight?.id == id else { return }
+            let accepted = parts[0] == "K"
+            cancel175CCover()
+            if extras175CEnabled { cover175CStatus = accepted ? "圆屏已收到封面画面" : "圆屏拒绝了此封面" }
+            return
         }
         if parts.first == "K", parts.count >= 3, let t = Int(parts[1]), let id = Int(parts[2]) {
             MapPipelineTrace.event("map-receipt",["type":t,"id":id])

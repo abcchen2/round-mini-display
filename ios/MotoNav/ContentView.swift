@@ -718,6 +718,19 @@ struct ContentView: View {
                 ForEach(Settings.bootBrands.indices, id: \.self) { i in Text(Settings.bootBrands[i]).tag(i) }
             }.tint(ContentView.cyan)
             Text(settings.bootStatus).font(.caption).foregroundColor(ContentView.sub)
+            Toggle("1.75C 圆屏扩展", isOn: Binding(get: { ble.extras175CEnabled }, set: { ble.set175C($0) }))
+                .disabled(!ble.isReady || !ble.verified)
+            Text("只为使用 1.75C 扩展固件的圆屏开启。开启后同步 iPhone 电量，并在系统音乐授权模式下发送可用的封面。")
+                .font(.caption).foregroundColor(ContentView.sub)
+            if ble.extras175CEnabled && settings.musicHID {
+                Toggle("联网匹配专辑封面", isOn: Binding(get: { ble.cover175COnline }, set: { ble.set175COnlineCover($0) }))
+                    .disabled(!ble.isReady || !ble.verified)
+                Text("默认关闭。开启后将歌名和歌手发给 Apple iTunes 曲库进行匹配，找不到时不猜测。")
+                    .font(.caption).foregroundColor(ContentView.sub)
+            }
+            if ble.extras175CEnabled && !ble.cover175CStatus.isEmpty {
+                Text(ble.cover175CStatus).font(.caption).foregroundColor(ContentView.sub)
+            }
             Toggle("音乐控制", isOn: $settings.musicHID).foregroundColor(AppTheme.text).tint(ContentView.pink)
             if settings.musicHID {
                 Text(ble.mediaHIDSupported

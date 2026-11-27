@@ -12,3 +12,7 @@ MotoNav iOS 0.16.0 的本轮界面参考移植并适配自 **[coolcoolmanman（G
 
 本项目继续保留 AI 辅助开发说明和[非商业使用条款](../LICENSE.md)。第三方代码、资源、商标及服务保留各自来源和适用条款；免费分发修改版本时应继续保留本来源说明，并标注修改内容。
 
+
+## 1.75C 适配补充
+
+Build 22 的封面编码及对应回归测试改编自 [Charlie-healer/ESP32S3 fe5241e](https://github.com/Charlie-healer/ESP32S3/tree/fe5241efd5fc0bf0b2e03ac3f4bb2dd99fbcddb6)；沿用[原项目非商业使用条款](https://github.com/Charlie-healer/ESP32S3/blob/fe5241efd5fc0bf0b2e03ac3f4bb2dd99fbcddb6/LICENSE.md)。本分支增加了输入校验、按设备启用、仅 Apple iTunes 查询、限时及导航优先的发送机制。详见 [1.75C 适配与验收](175C-COMPAT.md)。
